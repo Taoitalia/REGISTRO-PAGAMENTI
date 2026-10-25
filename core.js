@@ -610,18 +610,20 @@
       const nome = clean(so.nome);
       if (!nome) return;
       let first = true;
-      const ric = s.par.ricevute && isNum(so.ric) ? Number(so.ric) : null;
+      const lr = s.par.ricevute ? leggiNumeroRic(so.ric) : null;
+      const ric = lr ? lr.n : null;
+      const conBis = (riga) => (riga.ric !== null && lr && lr.bis ? { ...riga, ricBis: lr.bis } : riga);
       if (so.assoc && num(so.impAssoc) > 0) {
-        righe.push({ desc: 'Quota associazione socio ' + nome, dare: null, avere: r2(so.impAssoc), conto: 'Quote sociali', ric: first ? ric : null });
+        righe.push(conBis({ desc: 'Quota associazione socio ' + nome, dare: null, avere: r2(so.impAssoc), conto: 'Quote sociali', ric: first ? ric : null }));
         first = false; tot += num(so.impAssoc); anyAssoc = true;
       }
       if (so.part && num(so.impPart) > 0 && so.da) {
         const per = formatPeriodo(so.da, so.a || so.da);
         const corsi = so.tipoPart === 'corsi';
-        righe.push({
+        righe.push(conBis({
           desc: (corsi ? 'Quota partecip. corsi socio ' : 'Quota partecip. att. sport. socio ') + nome + ' ' + per,
           dare: null, avere: r2(so.impPart), conto: corsi ? 'Quote partecipazione corsi' : 'Quote partecipazione attività sport.', ric: first ? ric : null
-        });
+        }));
         first = false; tot += num(so.impPart); anyPart = true; if (corsi) anyCorsi = true; periodi.add(per);
       }
       if (!first && !nomi.includes(nome)) nomi.push(nome);
@@ -711,6 +713,21 @@
     sortedOps.forEach((op) => op.righe.forEach((r) => { if (isNum(r.ric)) mx = Math.max(mx, Number(r.ric)); }));
     return mx + 1;
   }
+  // numero di ricevuta: intero, con un'eventuale aggiunta («bis», «ter»…) per le ricevute fuori ordine.
+  // Nella riga del Libro Giornale: ric (numero) e ricBis (aggiunta, solo se c'è).
+  function leggiNumeroRic(t) {
+    if (isNum(t)) return Number(t) > 0 && Number.isInteger(Number(t)) ? { n: Number(t), bis: null } : null;
+    const m = /^\s*(\d{1,6})\s*[-/]?\s*([A-Za-z]{1,10})?\s*$/.exec(String(t == null ? '' : t));
+    return m && Number(m[1]) > 0 ? { n: Number(m[1]), bis: m[2] ? m[2].toLowerCase() : null } : null;
+  }
+  const testoRic = (n, bis) => (isNum(n) ? String(Number(n)) + (bis ? ' ' + bis : '') : '');
+  const testoRicRiga = (r) => testoRic(r && r.ric, r && r.ricBis);
+  // la riga con il numero di ricevuta (o senza, con n = null)
+  function rigaConRic(r, n, bis) {
+    const x = { ...r, ric: isNum(n) ? Number(n) : null };
+    if (isNum(n) && bis) x.ricBis = bis; else delete x.ricBis;
+    return x;
+  }
 
   // Suggerimenti dalle registrazioni precedenti
   function storicoVoci(sortedOps, s) {
@@ -745,9 +762,21 @@
   // in fondo al foglio: verde POS/SumUp, giallo banca, senza colore contanti.
   const REG_LEGENDA = { POS: 'sumup', SUMUP: 'sumup', CARTA: 'sumup', BANCA: 'banca', BONIFICO: 'banca', CASH: 'contanti', CONTANTI: 'contanti', PAYPAL: 'paypal', SATISPAY: 'satispay' };
   const REG_COLORI = { FF92D050: 'sumup', FFFFFF00: 'banca', FFFFC000: 'paypal', FF00B0F0: 'satispay' };
-  const REG_MEZZI = { contanti: 'Contanti', sumup: 'SumUp (carta)', banca: 'Bonifico', paypal: 'PayPal', satispay: 'Satispay' };
+  // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa
+  const REG_MEZZI = { contanti: 'Contanti', allenatore: 'Contanti presso l’allenatore', sumup: 'SumUp (carta)', banca: 'Bonifico', paypal: 'PayPal', satispay: 'Satispay' };
   const INIZIALI_MESI = ['G', 'F', 'M', 'A', 'M', 'G', 'L', 'A', 'S', 'O', 'N', 'D'];
-  const mezzoScrittura = (m) => (m === 'contanti' ? 'contanti' : m === 'sumup' ? 'sumup' : m ? 'banca' : null);
+  const mezzoScrittura = (m) => (m === 'contanti' || m === 'allenatore' ? 'contanti' : m === 'sumup' ? 'sumup' : m ? 'banca' : null);
+  // contanti non ancora in cassa: operazioni segnate «daConsegnare» e importo entrato in cassa
+  function contantiDaConsegnare(sortedOps, s) {
+    const cassa = contoFin(s, 'cassa').n;
+    const ops = sortedOps.filter((op) => op.daConsegnare).map((op) => ({ op, importo: r2(op.righe.reduce((t, r) => t + (r.conto === cassa ? num(r.dare) - num(r.avere) : 0), 0)) }));
+    return { ops, totale: r2(ops.reduce((t, x) => t + x.importo, 0)) };
+  }
+  // data di consegna scritta nella nota del pagamento dall'app («consegnato il 05/11/2026»)
+  function dataConsegna(nota) {
+    const m = /consegnat\w*\s+(?:in cassa\s+)?il\s+(\d{1,2})\/(\d{1,2})\/(\d{4})/i.exec(String(nota || ''));
+    return m ? m[3] + '-' + pad2(m[2]) + '-' + pad2(m[1]) : null;
+  }
   const pad2 = (x) => String(x).padStart(2, '0');
   const isoUTC = (d) => d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
 
@@ -953,7 +982,7 @@
         id: 'online:' + p.id, foglio: String(c.nome), riga: 0, cella: voce === 'assoc' ? 'iscrizione' : (p.mese ? meseNome(p.mese) : '?'),
         nomeReg: clean(so.nominativo), nomeProposto: nomeProposto(so), voce, mese: voce === 'mese' ? p.mese : null,
         data: p.data || null, importo, testo: (p.data ? fmtData(p.data).slice(0, 5) : '') + (importo !== null ? ' ' + fmt(importo) : ''),
-        colore: null, mezzo: REG_MEZZI[p.mezzo] ? p.mezzo : 'contanti', problemi: [], versamento: p.versamento || null, dispositivo: p.dispositivo || null
+        colore: null, mezzo: REG_MEZZI[p.mezzo] ? p.mezzo : 'contanti', problemi: [], versamento: p.versamento || null, dispositivo: p.dispositivo || null, nota: p.nota || null
       };
       if (!it.data) it.problemi.push('senzaData');
       else if (it.data < s.inizio || it.data > s.fine) it.problemi.push('fuori');
@@ -1306,9 +1335,9 @@
     // 5. una scrittura per data, mezzo e famiglia
     const gruppi = new Map();
     nuovi.slice().sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0)).forEach((it) => {
-      const mz = mezzoScrittura(it.mezzo), fam = famiglia(it.nome);
-      const k = it.data + '|' + mz + '|' + fam;
-      if (!gruppi.has(k)) gruppi.set(k, { id: k, data: it.data, mezzo: mz, famiglia: fam, voci: [] });
+      const mz = mezzoScrittura(it.mezzo), fam = famiglia(it.nome), dc = it.mezzo === 'allenatore';
+      const k = it.data + '|' + mz + '|' + fam + (dc ? '|allenatore' : '');
+      if (!gruppi.has(k)) gruppi.set(k, { id: k, data: it.data, mezzo: mz, famiglia: fam, daConsegnare: dc, voci: [] });
       gruppi.get(k).voci.push(it);
     });
     const inRegistro = new Set();
@@ -1319,6 +1348,7 @@
       const mezziReg = Array.from(new Set(g.voci.map((it) => it.mezzo)));
       if (mezziReg.includes('satispay')) note.push('Pagato con Satispay: registrato sul conto banca, senza commissione. Correggi l’importo se Satispay ha trattenuto una commissione.');
       if (mezziReg.includes('paypal')) note.push('Pagato con PayPal: registrato sul conto banca.');
+      if (g.daConsegnare) note.push('Contanti ancora presso l’allenatore: l’operazione resta evidenziata in rosso finché il denaro non è consegnato in cassa.');
       const totLinee = new Set(g.voci.map((it) => it.imp));
       soci.forEach((so) => {
         so.voci.forEach((v) => {
@@ -1331,7 +1361,7 @@
       });
       const voci = g.voci;
       proposte.push({
-        id: g.id, data: g.data, mezzo: g.mezzo, mezziReg, famiglia: g.famiglia, voci, note, sospetti,
+        id: g.id, data: g.data, mezzo: g.mezzo, mezziReg, famiglia: g.famiglia, daConsegnare: !!g.daConsegnare, voci, note, sospetti,
         reg: voci.map((it) => it.ref),
         incluso: o.scelte && g.id in o.scelte ? !!o.scelte[g.id] : !sospetti.some((x) => x.forte)
       });
@@ -1397,11 +1427,22 @@
       if (rg.assoc) y.i = true;
       if (rg.assoc || rg.mesi.length) y.celle.push(rg.foglio);
     });
+    // corsi di ogni socio, per sapere a quale ente va tesserato (FIP per il basket, UISP per gli altri)
+    const cs = new Map();
+    (lettura.righe || []).concat(lettura.pagamenti).forEach((rg) => {
+      if (!rg.nomeReg || !rg.foglio) return;
+      const x = personaRiga(rg.nomeReg);
+      if (!x || !x.nome || x.stato === 'ambiguo' || x.stato === 'incompleto') return;
+      const k = chiaveSocio(x.nome);
+      if (!cs.has(k)) cs.set(k, { n: x.nome, c: new Set() });
+      cs.get(k).c.add(rg.foglio);
+    });
+    const corsiSoci = Array.from(cs.values()).map((y) => ({ n: y.n, c: Array.from(y.c).sort() })).sort((a, b) => a.n.localeCompare(b.n, 'it'));
     const nonIncassare = Array.from(ni.values()).map((y) => ({ n: y.n, m: Array.from(y.m || []).sort(), i: y.i, f: y.f, nomeReg: Array.from(y.nomeReg), fogli: Array.from(new Set(y.celle)) }))
       .filter((y) => y.m.length || y.i).sort((a, b) => a.n.localeCompare(b.n, 'it'));
 
     return {
-      persone: Array.from(persone.values()), proposte, presenti, verificare, doppi, saltatiDaTe, quoteCorsi, nonIncassare,
+      persone: Array.from(persone.values()), proposte, presenti, verificare, doppi, saltatiDaTe, quoteCorsi, nonIncassare, corsiSoci,
       soci: sociList.map((x) => x.nome).sort((a, b) => a.localeCompare(b, 'it'))
     };
   }
@@ -1470,7 +1511,7 @@
   // dati dell'associazione e testi della ricevuta (dal foglio RICEVUTA della maschera Excel)
   function enteDefault() { return {}; }
   const esBreve = (s) => s.es.replace(/^(\d{4})-\d{2}(\d{2})$/, '$1-$2'); // 2026-2027 -> 2026-27
-  const etichettaRicevuta = (n, s, ente) => String((ente && ente.formatoNumero) || '{n}/{aa}').replace('{n}', n).replace('{aa}', s.inizio.slice(2, 4)).replace('{aaaa}', s.inizio.slice(0, 4));
+  const etichettaRicevuta = (n, s, ente, bis) => String((ente && ente.formatoNumero) || '{n}/{aa}').replace('{n}', isNum(n) ? testoRic(n, bis) : n).replace('{aa}', s.inizio.slice(2, 4)).replace('{aaaa}', s.inizio.slice(0, 4));
   const fineMese = (ym) => { const [y, m] = ym.split('-').map(Number); return ym + '-' + pad2(new Date(Date.UTC(y, m, 0)).getUTCDate()); };
 
   // anagrafica: la riga che corrisponde al nome usato in contabilità
@@ -1593,17 +1634,25 @@
     if (!ws) throw new Error('Nel file non trovo il foglio «DATI» con l’elenco dei soci.');
     const out = [];
     const txtC = (c) => { const v = valoreCella(ws.getCell(c)); if (v instanceof Date) return isoUTC(v); return clean(v == null ? '' : String(v)); };
+    const esportato = /libro giornale/i.test(txtC('K1'));
     for (let r = 1; r <= ws.rowCount; r++) {
       const socio = txtC('A' + r);
       if (!socio || /^(nominativ|socio|cognome)/i.test(socio)) continue;
       const g = valoreCella(ws.getCell('G' + r));
       const quota = valoreCella(ws.getCell('I' + r));
       const tel = valoreCella(ws.getCell('J' + r));
-      out.push({
+      const telT = tel == null ? '' : clean(typeof tel === 'number' ? String(Math.round(tel)) : String(tel));
+      const senza = /^senza/i.test(telT);
+      const x = {
         socio, pagatore: txtC('B' + r), cf: txtC('C' + r).toUpperCase(), disciplina: txtC('D' + r),
         minore: txtC('E' + r), natoA: txtC('F' + r), natoIl: g instanceof Date ? isoUTC(g) : '', residenza: txtC('H' + r),
-        quota: isNum(quota) ? Number(quota) : null, telefono: tel == null ? '' : clean(typeof tel === 'number' ? String(Math.round(tel)) : String(tel))
-      });
+        quota: isNum(quota) ? Number(quota) : null, telefono: senza ? '' : telT
+      };
+      if (senza) x.senzaTelefono = true;
+      // colonne K e L del file esportato dal Bilancio (nella maschera originale in L ci sono gli elenchi degli importi)
+      if (esportato && txtC('K' + r)) x.contabilita = txtC('K' + r);
+      if (esportato && txtC('L' + r)) x.note = txtC('L' + r);
+      out.push(x);
     }
     return out;
   }
@@ -1624,6 +1673,259 @@
     return { lista, nuovi, aggiornati };
   }
 
+  // ---------------------------------------------------------------- libro soci
+  // Un socio per riga, come nel libro cartaceo: chi esce e rientra ha più righe (stesso codice fiscale).
+  // Lettere nella colonna del recesso: corso di basket del socio ancora attivo.
+  const BASKET_LETTERE = { '*': 'BASKET C', m: 'BASKET M', se: 'BASKET SM el', sm: 'BASKET SM medie' };
+  const BASKET_CORSI = ['BASKET C', 'BASKET M', 'BASKET SM el', 'BASKET SM medie'];
+  const BASKET_NOMI = { 'BASKET C': 'Basket Castelceriolo', 'BASKET M': 'Basket Mandrogne', 'BASKET SM el': 'Basket Spinetta elementari', 'BASKET SM medie': 'Basket Spinetta medie' };
+  // ente a cui si tessera chi frequenta un corso: FIP per il basket (tranne le medie di Spinetta), UISP per tutti gli altri
+  const ENTI = ['UISP', 'FIP'];
+  const enteCorso = (corso) => (/^basket/i.test(clean(corso || '')) && !/sm\s*medie/i.test(corso) ? 'FIP' : 'UISP');
+  function entiDaCorsi(corsi) {
+    const set = new Set((corsi || []).map(enteCorso));
+    return ENTI.filter((x) => set.has(x));
+  }
+  const csCache = new WeakMap();
+  function corsiSocio(s, nome) {
+    const src = s && s.registro && s.registro.corsiSoci;
+    if (!src || !Array.isArray(src.soci) || !nome) return [];
+    if (!csCache.has(src)) csCache.set(src, new Map(src.soci.filter((y) => y && y.n).map((y) => [chiaveSocio(y.n), y.c || []])));
+    return csCache.get(src).get(chiaveSocio(nome)) || [];
+  }
+  const CF_MESI = 'ABCDEHLMPRST';
+  const CF_OMO = 'LMNPQRSTUV';
+  // data di nascita e sesso dal codice fiscale (anche con omocodia)
+  function datiDaCF(cf, oggi) {
+    const c = clean(cf || '').toUpperCase().replace(/\s/g, '');
+    if (!/^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/.test(c)) return null;
+    const dig = (t) => t.split('').map((ch) => (/\d/.test(ch) ? ch : String(CF_OMO.indexOf(ch)))).join('');
+    const yy = Number(dig(c.slice(6, 8))), mm = CF_MESI.indexOf(c[8]) + 1;
+    let dd = Number(dig(c.slice(9, 11)));
+    if (!mm) return null;
+    const sesso = dd > 40 ? 'F' : 'M';
+    if (dd > 40) dd -= 40;
+    const cy = Number(String(oggi || oggiISO()).slice(2, 4));
+    const y = (yy > cy ? 1900 : 2000) + yy;
+    const d = new Date(Date.UTC(y, mm - 1, dd));
+    if (d.getUTCMonth() !== mm - 1) return null;
+    return { data: y + '-' + pad2(mm) + '-' + pad2(dd), sesso };
+  }
+  function cfValido(cf) {
+    const c = clean(cf || '').toUpperCase();
+    if (!/^[A-Z0-9]{16}$/.test(c) || !datiDaCF(c)) return false;
+    const DISP = { 0: 1, 1: 0, 2: 5, 3: 7, 4: 9, 5: 13, 6: 15, 7: 17, 8: 19, 9: 21, A: 1, B: 0, C: 5, D: 7, E: 9, F: 13, G: 15, H: 17, I: 19, J: 21, K: 2, L: 4, M: 18, N: 20, O: 11, P: 3, Q: 6, R: 8, S: 12, T: 14, U: 16, V: 10, W: 22, X: 25, Y: 24, Z: 23 };
+    let sum = 0;
+    for (let i = 0; i < 15; i++) {
+      const ch = c[i];
+      sum += i % 2 === 0 ? DISP[ch] : (/\d/.test(ch) ? Number(ch) : ch.charCodeAt(0) - 65);
+    }
+    return String.fromCharCode(65 + (sum % 26)) === c[15];
+  }
+  // «Novi Ligure (Al) - 25/02/1970» -> luogo e data
+  function leggiNascita(t, oggi) {
+    const x = clean(t || '');
+    const m = /^(.*?)[\s\-–,]*(\d{1,2})\s*[/.]\s*(\d{1,2})\s*[/.]\s*(\d{2}|\d{4})\s*$/.exec(x);
+    if (!m) return { luogo: x.replace(/[\s\-–]+$/, ''), data: null };
+    let y = Number(m[4]);
+    if (m[4].length === 2) { const cy = Number(String(oggi || oggiISO()).slice(2, 4)); y += y > cy ? 1900 : 2000; }
+    const g = Number(m[2]), me = Number(m[3]);
+    const d = new Date(Date.UTC(y, me - 1, g));
+    if (d.getUTCMonth() !== me - 1 || d.getUTCDate() !== g || y < 1900) return { luogo: clean(m[1]).replace(/[\s\-–]+$/, ''), data: null };
+    return { luogo: clean(m[1]).replace(/[\s\-–]+$/, ''), data: y + '-' + pad2(me) + '-' + pad2(g) };
+  }
+  function eta(nascita, alGiorno) {
+    if (!nascita) return null;
+    const a = alGiorno || oggiISO();
+    let n = Number(a.slice(0, 4)) - Number(nascita.slice(0, 4));
+    if (a.slice(5) < nascita.slice(5)) n--;
+    return n;
+  }
+  const idLibro = (n) => 'n' + String(n).padStart(4, '0');
+  // lettura del libro soci Excel (foglio con COGNOME, NOME, … RECESSO/ESCLUSIONE)
+  function importaLibro(wb, oggi) {
+    const ws = wb.worksheets.find((w) => { for (let r = 1; r <= 8; r++) if (/^cognome$/i.test(clean(String(valoreCella(w.getCell(r, 2)) || '')))) return true; return false; }) || wb.worksheets[0];
+    if (!ws) throw new Error('Il file è vuoto.');
+    let hr = 0;
+    for (let r = 1; r <= 8; r++) if (/^cognome$/i.test(clean(String(valoreCella(ws.getCell(r, 2)) || '')))) hr = r;
+    if (!hr) throw new Error('Non trovo la riga dei titoli con «COGNOME» e «NOME»: è il libro soci?');
+    const dataCella = (v) => {
+      if (v instanceof Date) return isoUTC(v);
+      const t = clean(v == null ? '' : String(v));
+      const m = /^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2}|\d{4})$/.exec(t);
+      if (!m) return null;
+      const y = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+      return y + '-' + pad2(m[2]) + '-' + pad2(m[1]);
+    };
+    const out = [], avvisi = [], visti = new Set();
+    for (let r = hr + 1; r <= ws.rowCount; r++) {
+      const cognome = clean(String(valoreCella(ws.getCell(r, 2)) || ''));
+      if (!cognome) continue;
+      const nome = clean(String(valoreCella(ws.getCell(r, 3)) || ''));
+      const nv = valoreCella(ws.getCell(r, 1));
+      const n = isNum(nv) ? Number(nv) : (/^\d+$/.test(clean(String(nv || ''))) ? Number(clean(String(nv))) : null);
+      const nasc = leggiNascita(String(valoreCella(ws.getCell(r, 4)) || ''), oggi);
+      const cf = clean(String(valoreCella(ws.getCell(r, 6)) || '')).toUpperCase().replace(/\s/g, '');
+      const jv = valoreCella(ws.getCell(r, 10));
+      const jd = dataCella(jv);
+      const lettera = !jd && jv != null ? clean(String(jv)).toLowerCase() : '';
+      const e = {
+        id: n !== null ? idLibro(n) : 'r' + r, n, cognome: cognome.toUpperCase(), nome: nome.toUpperCase(),
+        luogoNascita: nasc.luogo || '', dataNascita: nasc.data, residenza: clean(String(valoreCella(ws.getCell(r, 5)) || '')), cf,
+        dataScheda: dataCella(valoreCella(ws.getCell(r, 7))), dataAmmissione: dataCella(valoreCella(ws.getCell(r, 8))),
+        ultimoPagamento: dataCella(valoreCella(ws.getCell(r, 9))), dataRecesso: jd,
+        basket: lettera ? (BASKET_LETTERE[lettera] || null) : null, basketCodice: lettera || null
+      };
+      const nota = [];
+      if (n === null) nota.push('senza numero progressivo');
+      else if (visti.has(n)) nota.push('numero ' + n + ' ripetuto');
+      if (n !== null) visti.add(n);
+      if (!nasc.data) nota.push('data di nascita non leggibile («' + clean(String(valoreCella(ws.getCell(r, 4)) || '')) + '»)');
+      if (!cf) nota.push('senza codice fiscale');
+      else if (!cfValido(cf)) nota.push('codice fiscale da controllare');
+      if (lettera && !BASKET_LETTERE[lettera]) nota.push('lettera «' + lettera + '» nella colonna del recesso: corso da verificare');
+      if (nasc.data && cf && datiDaCF(cf, oggi) && datiDaCF(cf, oggi).data !== nasc.data) nota.push('data di nascita diversa da quella del codice fiscale');
+      if (nota.length) { e.daVerificare = nota; avvisi.push({ id: e.id, n, nome: e.cognome + ' ' + e.nome, note: nota }); }
+      out.push(e);
+    }
+    // stesso numero due volte: la seconda prende un id distinto
+    const ids = new Set();
+    out.forEach((e) => { let id = e.id, k = 2; while (ids.has(id)) id = e.id + '-' + k++; e.id = id; ids.add(id); });
+    return { soci: out, avvisi };
+  }
+
+  // collegamenti e situazione di ogni riga del libro nell'esercizio s
+  // ctx: { soci: situazioneSoci(...), anag: anagrafica ricevute, oggi }
+  function situazioneLibro(libro, s, ctx) {
+    const c = ctx || {};
+    const oggi = c.oggi || oggiISO();
+    const sociJ = c.soci ? Array.from(c.soci.values()) : [];
+    const parsedJ = sociJ.map((x) => ({ x, p: parseNome(x.nome) }));
+    const anag = c.anag || [];
+    const lista = (libro || []).filter((e) => e && e.id);
+    // nome nel Libro Giornale: quello scelto a mano, altrimenti l'unico che corrisponde (prima i soci attivi)
+    const presi = new Map();
+    lista.forEach((e) => { if (e.contabilita) presi.set(chiaveSocio(e.contabilita), e.id); });
+    const auto = new Map();
+    const ordine = lista.slice().sort((a, b) => (a.dataRecesso ? 1 : 0) - (b.dataRecesso ? 1 : 0) || num(b.n) - num(a.n));
+    ordine.forEach((e) => {
+      if (e.contabilita) return;
+      const R = parseNome(e.nome + ' ' + e.cognome);
+      let best = [], top = 0;
+      parsedJ.forEach(({ x, p }) => { const sc = punteggioNome(R, p); if (sc > top) { top = sc; best = [x]; } else if (sc && sc === top) best.push(x); });
+      if (best.length === 1 && top >= 60) {
+        const k = chiaveSocio(best[0].nome);
+        if (!presi.has(k)) { presi.set(k, e.id); auto.set(e.id, best[0].nome); }
+      }
+    });
+    const perCF = new Map();
+    lista.forEach((e) => { if (e.cf) { if (!perCF.has(e.cf)) perCF.set(e.cf, []); perCF.get(e.cf).push(e.id); } });
+    return lista.map((e) => {
+      const nominativo = clean(e.cognome + ' ' + e.nome);
+      const contabilita = e.contabilita || auto.get(e.id) || null;
+      const so = contabilita && c.soci ? c.soci.get(chiaveSocio(contabilita)) : null;
+      // anagrafica delle ricevute
+      let a = e.anagId ? anag.find((x) => x.id === e.anagId) : null;
+      const kn = normNome(nominativo);
+      if (!a) a = anag.find((x) => normNome(x.socio) === kn || normNome(x.minore) === kn) || null;
+      if (!a && contabilita) a = anag.find((x) => x.contabilita && chiaveSocio(x.contabilita) === chiaveSocio(contabilita)) || null;
+      if (!a && e.cf) a = anag.find((x) => x.cf && x.cf === e.cf && !x.minore) || null;
+      // iscrizione dell'anno
+      const assoc = so && so.assoc.length ? so.assoc[so.assoc.length - 1] : null;
+      const ni = contabilita ? nonIncassareSocio(s, contabilita) : null;
+      let iscr = 'da pagare', iscrData = null, iscrFonte = null;
+      if (assoc) { iscr = 'pagata'; iscrData = assoc.data; iscrFonte = 'contabilità, op. n. ' + assoc.n; }
+      else if (e.ultimoPagamento && e.ultimoPagamento >= s.inizio) { iscr = 'pagata'; iscrData = e.ultimoPagamento; iscrFonte = 'libro soci'; }
+      else if (ni && ni.assoc && e.ultimoPagamento && e.ultimoPagamento >= addMonths(s.inizio.slice(0, 7), -3) + '-01') { iscr = 'pagata'; iscrData = e.ultimoPagamento; iscrFonte = 'pagata prima dell’inizio dell’anno (grigia nel registro pagamenti)'; }
+      else if (ni && ni.assoc) { iscr = 'non dovuta'; iscrFonte = 'grigia nel registro pagamenti'; }
+      const ultimo = [e.ultimoPagamento, assoc ? assoc.data : null].filter(Boolean).sort().pop() || null;
+      const attivo = !e.dataRecesso;
+      const nascita = e.dataNascita || (datiDaCF(e.cf, oggi) || {}).data || null;
+      const minoreOggi = nascita ? eta(nascita, oggi) < 18 : false;
+      const minoreIscr = nascita ? eta(nascita, iscrData || oggi) < 18 : false;
+      const genitore = e.genitore && e.genitore.cognome ? e.genitore : (a && a.minore && a.pagatore && normNome(a.pagatore) !== kn ? { nominativo: a.pagatore, cf: a.cf } : null);
+      const st = (e.stagioni && e.stagioni[s.es]) || {};
+      // corsi: dal registro pagamenti e, per il basket, dalla lettera del libro; da lì gli enti
+      const daRegistro = corsiSocio(s, contabilita);
+      const corsi = daRegistro.length ? daRegistro.slice() : (e.basket ? [e.basket] : []);
+      let enti = entiDaCorsi(corsi);
+      if (!enti.length) enti = ['UISP'];
+      const tess = {}, piatt = {};
+      enti.forEach((en) => { tess[en] = !!st['tess_' + en]; piatt[en] = !!st['piatt_' + en]; });
+      // segni messi prima della distinzione tra enti: valgono per l'ente del socio
+      if (st.tesserato && !ENTI.some((en) => ('tess_' + en) in st)) enti.forEach((en) => { tess[en] = true; });
+      if (st.piattaforma && !ENTI.some((en) => ('piatt_' + en) in st)) enti.forEach((en) => { piatt[en] = true; });
+      return {
+        e, id: e.id, nominativo, attivo, contabilita, contabilitaAuto: !e.contabilita && !!contabilita, anag: a,
+        iscr, iscrData, iscrFonte, ultimo, aggiornaData: !!(assoc && e.ultimoPagamento !== assoc.data), // la data giusta è quella del Libro Giornale
+        nascita, eta: nascita ? eta(nascita, oggi) : null, minore: minoreOggi, minoreIscr, genitore,
+        mancaGenitore: attivo && minoreIscr && !(genitore && (genitore.cf || '').length === 16),
+        corsi, enti, tess, piatt,
+        tesserato: enti.every((en) => tess[en]), piattaforma: enti.every((en) => piatt[en]),
+        storia: e.cf && perCF.get(e.cf) && perCF.get(e.cf).length > 1 ? perCF.get(e.cf).filter((id) => id !== e.id) : []
+      };
+    });
+  }
+  // nome nel Libro Giornale proposto per un nuovo socio: «Cognome N.»
+  function nomeContabile(cognome, nome) {
+    const ini = clean(nome || '').split(' ').filter(Boolean).map((w) => normNome(w).charAt(0).toUpperCase() + '.').join('');
+    return clean(maiuscola(clean(cognome || '')) + (ini ? ' ' + ini : ''));
+  }
+  // il libro soci in Excel: colonne A–K come nel LIBRO_SOCI.xlsx originale (stesse larghezze), a destra quelle del programma
+  function libroWorkbook(ExcelJS, righe, s, titolo) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    const ws = wb.addWorksheet('Libro soci', {
+      views: [{ state: 'frozen', xSplit: 4, ySplit: 3, zoomScale: 110 }],
+      pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, printTitlesRow: '1:3', margins: { left: 0.118, right: 0.118, top: 0.157, bottom: 0.157, header: 0.2, footer: 0.2 } }
+    });
+    larghezze(ws, 'LIBRO SOCI');
+    const extra = [['CORSI', 24], ['ENTI', 10], ['TESSERATO UISP', 11], ['PIATTAFORMA UISP', 11], ['TESSERATO FIP', 11], ['PIATTAFORMA FIP', 11], ['MINORE', 8], ['GENITORE', 28], ['CODICE FISCALE GENITORE', 21.88671875], ['NOME IN CONTABILITÀ', 24.33203125]];
+    const nCol = 11 + extra.length;
+    extra.forEach(([, w], i) => { ws.getColumn(12 + i).width = w; });
+    const cal = (o) => ({ name: 'Calibri', size: 11, ...(o || {}) });
+    const tutto = { left: { style: 'thin' }, right: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
+    ws.mergeCells(1, 1, 1, 10);
+    const t1 = ws.getCell(1, 1);
+    t1.value = titolo || 'LIBRO SOCI'; t1.font = cal({ bold: true }); t1.alignment = { horizontal: 'center' };
+    const testa = (r, c, v) => { const x = ws.getCell(r, c); x.value = v; x.font = cal(); x.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; x.border = tutto; };
+    ['N. PROGRESSIVO', 'COGNOME', 'NOME', 'LUOGO E DATA NASCITA', 'RESIDENZA', 'CODICE FISCALE'].forEach((v, i) => { testa(2, i + 1, v); testa(3, i + 1, null); });
+    testa(2, 7, 'AMMISSIONE'); testa(2, 8, null); testa(2, 9, null);
+    testa(3, 7, 'DATA SCHEDA           ISCRIZIONE'); testa(3, 8, 'DATA DELIBERA                AMMISSIONE'); testa(3, 9, 'DATA ULTIMO           PAGAMENTO  ISCRIZIONE');
+    testa(2, 10, 'RECESSO/ESCLUSIONE'); testa(3, 10, 'DATA DELIBERA                 RECESSO/ESCLUSIONE');
+    testa(2, 11, 'ISCRIZIONE ' + esBreve(s)); testa(3, 11, null);
+    extra.forEach(([v], i) => { testa(2, 12 + i, v); testa(3, 12 + i, null); });
+    [1, 2, 3, 4, 5, 6, 11].concat(extra.map((x, i) => 12 + i)).forEach((c) => ws.mergeCellsWithoutStyle(2, c, 3, c));
+    ws.mergeCellsWithoutStyle(2, 7, 2, 9);
+    ws.getRow(3).height = 50.25;
+    const d = (iso) => (iso ? toDate(iso) : null);
+    const lettera = {};
+    Object.keys(BASKET_LETTERE).forEach((k) => { lettera[BASKET_LETTERE[k]] = k; });
+    righe.forEach((x, k) => {
+      const e = x.e;
+      const row = ws.getRow(k + 4);
+      const bk = x.corsi.find((c) => lettera[c]);
+      const v = [e.n, e.cognome, e.nome, [e.luogoNascita, e.dataNascita ? fmtData(e.dataNascita) : ''].filter(Boolean).join(' - '), e.residenza, e.cf,
+        d(e.dataScheda), d(e.dataAmmissione), d(x.ultimo), e.dataRecesso ? d(e.dataRecesso) : x.attivo ? (bk ? lettera[bk] : e.basketCodice || null) : null,
+        x.attivo ? (x.iscr === 'pagata' ? fmtData(x.iscrData) : x.iscr) : '',
+        x.corsi.length ? x.corsi.join(', ') : (e.basket || ''), x.attivo ? x.enti.join(' + ') : '',
+        ...['UISP', 'FIP'].flatMap((en) => [x.attivo && x.enti.includes(en) ? (x.tess[en] ? 'sì' : 'no') : '', x.attivo && x.enti.includes(en) ? (x.piatt[en] ? 'sì' : 'no') : '']),
+        x.minore ? 'sì' : '', x.genitore ? (x.genitore.nominativo || clean(x.genitore.cognome + ' ' + x.genitore.nome)) : '', x.genitore ? x.genitore.cf || '' : '', x.contabilita || ''];
+      for (let i = 0; i < nCol; i++) {
+        const c = row.getCell(i + 1);
+        const val = v[i];
+        c.value = val === undefined || val === '' ? null : val;
+        c.font = cal();
+        c.border = tutto;
+        if (val instanceof Date) c.numFmt = DATEF;
+        if (i === 9 || i >= 10) c.alignment = { horizontal: 'center' };
+      }
+      if (x.attivo && x.iscr === 'da pagare') row.getCell(11).font = cal({ bold: true, color: { argb: 'FFA2372C' } });
+    });
+    ws.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: nCol } };
+    return wb;
+  }
+
   // ---------------------------------------------------------------- Excel: costanti di stile
   const ACC = '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-';
   const DATEF = 'mm-dd-yy'; // formato data predefinito di Excel (n. 14): si adatta alla lingua
@@ -1640,8 +1942,57 @@
     return new Date(Date.UTC(y, m - 1, d));
   }
 
+  // ---------------------------------------------------------------- Excel: larghezze delle colonne
+  // misure lette dai fogli dei file originali (Bilancio 2026-2027.xlsx, REGISTRO_PAGAMENTI_26-27.xlsx,
+  // LIBRO_SOCI.xlsx, MASCHERA_RICEVUTA.xlsm): ogni file esportato usa quelle del foglio da cui nasce.
+  // [colonne, larghezza predefinita del foglio]
+  const REG_STD = 'A:3.109375 B:35.33203125 C:4.88671875 D:15.109375 E-P:7.33203125';
+  const REG_F7 = (b, fino) => 'A:3.109375 B:' + b + ' C:4.88671875 D:15.109375 E:7.33203125 F:7 G-' + (fino || 'O') + ':7.33203125';
+  const LARGHEZZE = {
+    'Libro Giornale': ['A:12.109375 B:12.33203125 C:47.5546875 D-E:12.33203125 F:36.44140625 G:9.109375 H:9.44140625', 9.109375],
+    'Rendiconto Economico': ['A:34.88671875 B:10.88671875 D:34.88671875 E:10.88671875 H:9.44140625'],
+    'Stato Patrimoniale': ['A:34.88671875 B:10.88671875 D:34.88671875 E:10.88671875 F:11 G:9.88671875'],
+    'Bilancio Banche': ['A:24.77734375 B:14.5546875 D-E:9.44140625 F:8.88671875 G:11 H:4 I:11'],
+    'Cassa': ['A:10.88671875 B:12.33203125 C:59.33203125 D-E:8.88671875 F:9.5546875 G-H:8.88671875 I:9.5546875 J:12', 9.109375],
+    'Rendiconto per Cassa': ['A:5.88671875 B:46.21875 C-D:11.109375 E:3.77734375 F:5.88671875 G:46.21875 H-I:11.109375 J:8.88671875 K:11', 8.88671875],
+    'UTILIZZO CONTRIBUTI': ['A:30.88671875 B:10.33203125 C:26.109375 D:9.109375 F:9.109375'],
+    'LIBRO SOCI': ['A:16 B:24.33203125 C:22 D:40 E:48 F:21.88671875 G:13.44140625 H:14.6640625 I:23.6640625 J:20.5546875 K:11.5546875', 9.109375],
+    'DATI': ['A-B:28.88671875 C:20.109375 D:17.21875 E:28.5546875 F:22.44140625 G:10.109375 H:46.44140625 I-K:17'],
+    'reg:cuccioli': ['A:3.109375 B:41.77734375 C:4.88671875 D:15.109375 E-P:7.33203125', 8.88671875],
+    'reg:J+T': [REG_STD, 8.88671875],
+    'reg:cast asilo': [REG_F7('35.33203125')],
+    'reg:cast el': [REG_F7('35.33203125')],
+    'reg:spinetta el': [REG_F7('43.77734375')],
+    'reg:spinetta medie': [REG_F7('43.77734375', 'N')],
+    'reg:sgv': [REG_F7('43.77734375')],
+    'reg:kung fu': ['A:3.109375 B:35.33203125 C:4.88671875 D:15.109375 E:7 F-P:7.33203125'],
+    'reg:tai chi al': [REG_STD],
+    'reg:tai chi spin': [REG_F7('43.77734375')],
+    'reg:BASKET C': [REG_F7('35.33203125')],
+    'reg:BASKET M': [REG_F7('35.33203125')],
+    'reg:BASKET SM el': [REG_F7('37')],
+    'reg:BASKET SM medie': [REG_F7('37')],
+    'reg:': [REG_STD]
+  };
+  const colN = (l) => l.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+  function larghezze(ws, chiave) {
+    const L = LARGHEZZE[chiave];
+    if (!L) return;
+    if (L[1]) ws.properties.defaultColWidth = L[1];
+    L[0].split(' ').forEach((p) => {
+      const [r, w] = p.split(':');
+      const [a, b] = r.split('-');
+      for (let c = colN(a); c <= colN(b || a); c++) ws.getColumn(c).width = Number(w);
+    });
+  }
+
   // ---------------------------------------------------------------- Excel: esportazione
-  function esportaWorkbook(ExcelJS, s, ops) {
+  // opz.fogli: solo alcuni fogli (le formule che rimandano a fogli non inclusi diventano valori);
+  // opz.soloOps: Set di id delle operazioni del Libro Giornale; opz.mese: mese del Registro Cassa; opz.nota: aggiunta al titolo
+  const FOGLI_BILANCIO = ['Libro Giornale', 'Rendiconto Economico', 'Stato Patrimoniale', 'Bilancio Banche', 'Cassa', 'Rendiconto per Cassa', 'UTILIZZO CONTRIBUTI'];
+  function esportaWorkbook(ExcelJS, s, ops, opz) {
+    const o = opz || {};
+    const inc = new Set(o.fogli || FOGLI_BILANCIO);
     const K = calcola(s, ops);
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Bilancio ASD';
@@ -1651,7 +2002,10 @@
     const thin = { style: 'thin' }, med = { style: 'medium' };
     const font = (o) => ({ name: SERIF, size: 10, ...(o || {}) });
     const arial = (o) => ({ name: 'Arial', size: 10, ...(o || {}) });
-    const F = (formula, result) => ({ formula, result: result === undefined ? undefined : r2(result) });
+    // una formula che rimanda a un foglio non incluso nel file diventa il suo valore
+    const fuori = (formula) => { const rx = /'([^']+)'!/g; let m; while ((m = rx.exec(formula))) if (!inc.has(m[1])) return true; return false; };
+    const F = (formula, result) => (fuori(formula) ? (result === undefined ? null : r2(result)) : { formula, result: result === undefined ? undefined : r2(result) });
+    const titoloNota = titoloEs + (o.nota ? ' – ' + o.nota : '');
     const fineDate = toDate(s.fine);
     const finePrec = toDate((Number(s.fine.slice(0, 4)) - 1) + s.fine.slice(4));
 
@@ -1670,10 +2024,10 @@
     }
 
     // ---------- Libro Giornale
+    if (inc.has('Libro Giornale')) {
     const lg = wb.addWorksheet('Libro Giornale', { views: [{ zoomScale: 130 }] });
-    lg.properties.defaultColWidth = 9.109375;
-    [12.11, 12.33, 47.55, 12.33, 9.11, 36.44, 9.11].forEach((w, i) => { lg.getColumn(i + 1).width = w; });
-    titoli(lg, 'A', 'F', 'LIBRO GIORNALE', titoloEs);
+    larghezze(lg, 'Libro Giornale');
+    titoli(lg, 'A', 'F', 'LIBRO GIORNALE', titoloNota);
     lg.getRow(3).height = 5.25;
     lg.getRow(4).height = 24;
     ['N. Operazione', 'Data', 'Operazione', 'Dare', 'Avere', 'Conto'].forEach((h, i) => {
@@ -1684,7 +2038,7 @@
       c.border = { left: i === 0 ? med : thin, right: i === 5 ? med : thin, top: med, bottom: med };
     });
     let row = 5;
-    K.sorted.forEach((op) => {
+    (o.soloOps ? K.sorted.filter((op) => o.soloOps.has(op.id)) : K.sorted).forEach((op) => {
       const r0 = row, n = op.righe.length || 1;
       const r1 = r0 + n - 1;
       const cA = lg.getCell(r0, 1), cB = lg.getCell(r0, 2);
@@ -1699,14 +2053,14 @@
         x.getCell(4).value = isNum(rg.dare) && num(rg.dare) !== 0 ? r2(rg.dare) : null;
         x.getCell(5).value = isNum(rg.avere) && num(rg.avere) !== 0 ? r2(rg.avere) : null;
         x.getCell(6).value = rg.conto || null;
-        if (isNum(rg.ric)) { x.getCell(7).value = Number(rg.ric); x.getCell(7).font = font(); x.getCell(7).alignment = { horizontal: 'left' }; }
+        if (isNum(rg.ric)) { x.getCell(7).value = rg.ricBis ? testoRic(rg.ric, rg.ricBis) : Number(rg.ric); x.getCell(7).font = font(); x.getCell(7).alignment = { horizontal: 'left' }; }
       });
       // bordi come nel file originale: N. e Data uniti senza righe interne, cornice media attorno all'operazione
       for (let r = r0; r <= r1; r++) {
         const top = r === r0 ? med : thin, bottom = r === r1 ? med : thin;
         for (let c = 1; c <= 6; c++) {
           const cell = lg.getCell(r, c);
-          cell.font = font();
+          cell.font = op.daConsegnare ? font({ color: { argb: 'FFC00000' } }) : font();
           if (c <= 2) {
             const b = { left: c === 1 ? med : thin, right: thin };
             if (r === r0) b.top = med;
@@ -1739,10 +2093,13 @@
     rr = lista(15, 'crediti', 'A', 4);
     lista(15, 'debiti', 'P', rr + 3);
     lg.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printArea: 'A$1:F$' + Math.max(lgLast, 5), printTitlesRow: '1:4', margins: { left: 0.197, right: 0.197, top: 0.197, bottom: 0.197, header: 0.512, footer: 0.512 }, horizontalCentered: true };
+    }
 
     // ---------- Rendiconto Economico
+    let REF = { avanzo: "'Rendiconto Economico'!B1", disavanzo: "'Rendiconto Economico'!E1" };
+    if (inc.has('Rendiconto Economico')) {
     const re = wb.addWorksheet('Rendiconto Economico', { views: [{ showGridLines: false }] });
-    [34.9, 10.9, null, 34.9, 10.9].forEach((w, i) => { if (w) re.getColumn(i + 1).width = w; });
+    larghezze(re, 'Rendiconto Economico');
     titoli(re, 'A', 'E', 'RENDICONTO ECONOMICO', titoloEs);
     re.getRow(6).height = 18;
     re.getCell('A6').value = 'COSTI'; re.getCell('A6').font = font({ size: 14, bold: true });
@@ -1799,11 +2156,13 @@
     setRE('A' + RS, 'SALDO FINALE'); setRE('B' + RS, F('B' + (T + 7) + '-B' + (T + 9), K.re.saldo), { num: 1, fill: 1 });
     for (let r = 7; r <= RS; r++) re.getRow(r).height = 13.8;
     re.pageSetup = { orientation: 'portrait', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 1, horizontalCentered: true, margins: { left: 0.394, right: 0.394, top: 0.394, bottom: 0.394, header: 0.512, footer: 0.512 }, printArea: 'A$1:E$' + (RS + 3) };
-    const REF = { avanzo: "'Rendiconto Economico'!B" + (T + 1), disavanzo: "'Rendiconto Economico'!E" + (T + 1) };
+    REF = { avanzo: "'Rendiconto Economico'!B" + (T + 1), disavanzo: "'Rendiconto Economico'!E" + (T + 1) };
+    }
 
     // ---------- Stato Patrimoniale
+    if (inc.has('Stato Patrimoniale')) {
     const sp = wb.addWorksheet('Stato Patrimoniale', { views: [{ showGridLines: false, zoomScale: 115 }] });
-    [34.9, 10.9, null, 34.9, 10.9].forEach((w, i) => { if (w) sp.getColumn(i + 1).width = w; });
+    larghezze(sp, 'Stato Patrimoniale');
     titoli(sp, 'A', 'E', 'STATO PATRIMONIALE', titoloEs);
     sp.getRow(5).height = 18;
     sp.getCell('A5').value = 'ATTIVITÀ'; sp.getCell('A5').font = font({ size: 14, bold: true });
@@ -1846,12 +2205,14 @@
     setSP('D' + (TS + 4), 'A PAREGGIO', 1); setSP('E' + (TS + 4), F('E' + TS + '+E' + (TS + 1) + '+E' + (TS + 2), K.sp.parP), 1, 1);
     for (let r = 7; r <= TS + 4; r++) sp.getRow(r).height = 13.8;
     sp.pageSetup = { orientation: 'portrait', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 1, margins: { left: 0.394, right: 0.394, top: 0.394, bottom: 0.394, header: 0.512, footer: 0.512 }, printArea: 'A$1:E$' + (TS + 4) };
+    }
 
     // ---------- Bilancio Banche
-    const bb = wb.addWorksheet('Bilancio Banche', { views: [{ showGridLines: false, zoomScale: 175 }] });
-    [24.8, 14.6, 8.9, 9.4, 8.9, 8.9, 11].forEach((w, i) => { bb.getColumn(i + 1).width = w; });
-    titoli(bb, 'A', 'G', "SALDO DISPONIBILITA' FINANZIARIE", titoloEs, { size1: 22, h1: 28.8 });
     const cassaN = contoFin(s, 'cassa').n, bancaN = contoFin(s, 'banca').n;
+    if (inc.has('Bilancio Banche')) {
+    const bb = wb.addWorksheet('Bilancio Banche', { views: [{ showGridLines: false, zoomScale: 175 }] });
+    larghezze(bb, 'Bilancio Banche');
+    titoli(bb, 'A', 'G', "SALDO DISPONIBILITA' FINANZIARIE", titoloEs, { size1: 22, h1: 28.8 });
     const bbSet = (addr, v, bold, isNumber) => { const c = bb.getCell(addr); c.value = v; c.font = arial({ bold: !!bold }); if (isNumber) c.numFmt = ACC; };
     bbSet('A5', 'SALDI INIZIALI (AL ' + fmtData(s.inizio) + ')');
     bbSet('A6', cassaN.toUpperCase()); bbSet('B6', r2(s.saldi.cassa), 0, 1);
@@ -1862,12 +2223,13 @@
     bbSet('A13', 'BANCA, PAYPAL E SUMUP'); bbSet('B13', F(sumifD(bancaN) + '-' + sumifA(bancaN) + '+B7', K.cassa.finale.banca), 0, 1);
     bbSet('A14', 'TOTALE', 1); bbSet('B14', F('SUM(B12:B13)', K.cassa.finale.cassa + K.cassa.finale.banca), 1, 1);
     bb.pageSetup = { orientation: 'portrait', paperSize: 9, horizontalCentered: true, margins: { left: 0.787, right: 0.787, top: 0.984, bottom: 0.984, header: 0.512, footer: 0.512 }, printArea: 'A$1:G$16' };
+    }
 
     // ---------- Cassa
+    if (inc.has('Cassa')) {
     const cs = wb.addWorksheet('Cassa', { views: [{ showGridLines: false, zoomScale: 130 }] });
-    cs.properties.defaultColWidth = 9.109375;
-    [10.89, 12.33, 59.33, 8.89, 9.11, 9.55, 8.89, 9.11, 9.55].forEach((w, i) => { cs.getColumn(i + 1).width = w; });
-    titoli(cs, 'A', 'I', 'REGISTRO CASSA', titoloEs);
+    larghezze(cs, 'Cassa');
+    titoli(cs, 'A', 'I', 'REGISTRO CASSA', titoloNota);
     const hdr = (addr, v, wrap) => { const c = cs.getCell(addr); c.value = v; c.font = arial({ bold: true }); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: !!wrap }; };
     hdr('A5', 'N.    operazione', 1); hdr('B5', 'Data'); hdr('C5', 'Operazione');
     hdr('D5', etichetta(contoFin(s, 'cassa')), 1); hdr('G5', etichetta(contoFin(s, 'banca')), 1);
@@ -1898,18 +2260,26 @@
       vals.forEach((v, i) => { if (v !== undefined && v !== null && v !== 0) x.getCell(i + 1).value = v; });
       x.getCell(6).value = fC; x.getCell(9).value = fB;
     };
-    csRow(7, [null, null, 'SALDO INIZIALE'], F("'Bilancio Banche'!B6", s.saldi.cassa), F("'Bilancio Banche'!B7", s.saldi.banca));
+    // con un mese scelto: si parte dal saldo alla fine del mese precedente
+    const csRighe = o.mese ? K.cassa.rows.filter((x) => (x.data || '').slice(0, 7) === o.mese) : K.cassa.rows;
+    if (o.mese) {
+      const prima = K.cassa.rows.filter((x) => (x.data || '').slice(0, 7) < o.mese).pop();
+      csRow(7, [null, null, 'SALDO AL ' + fmtData(fineMese(addMonths(o.mese, -1)))], r2(prima ? prima.sc : s.saldi.cassa), r2(prima ? prima.sb : s.saldi.banca));
+    } else csRow(7, [null, null, 'SALDO INIZIALE'], F("'Bilancio Banche'!B6", s.saldi.cassa), F("'Bilancio Banche'!B7", s.saldi.banca));
     for (let c = 1; c <= 9; c++) { const cell = cs.getRow(7).getCell(c); cell.border = { ...cell.border, top: med }; }
     let cr = 8;
-    K.cassa.rows.forEach((x) => {
+    csRighe.forEach((x) => {
       csRow(cr, [x.n, toDate(x.data), x.desc, x.ce, x.cu, undefined, x.be, x.bu], F('F' + (cr - 1) + '+D' + cr + '-E' + cr, x.sc), F('I' + (cr - 1) + '+G' + cr + '-H' + cr, x.sb));
+      if (x.op && x.op.daConsegnare) for (let c = 1; c <= 9; c++) cs.getCell(cr, c).font = font({ color: { argb: 'FFC00000' } });
       cr++;
     });
     cs.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printArea: 'A$1:I$' + Math.max(cr - 1, 7), printTitlesRow: '1:6', horizontalCentered: true, margins: { left: 0.787, right: 0.787, top: 0.394, bottom: 0.394, header: 0.512, footer: 0.512 } };
+    }
 
     // ---------- Rendiconto per Cassa
+    if (inc.has('Rendiconto per Cassa')) {
     const rc = wb.addWorksheet('Rendiconto per Cassa', { views: [{ zoomScale: 115 }] });
-    [5.9, 46.2, 11.1, 11.1, 3.8, 5.9, 46.2, 11.1, 11.1].forEach((w, i) => { rc.getColumn(i + 1).width = w; });
+    larghezze(rc, 'Rendiconto per Cassa');
     titoli(rc, 'B', 'H', 'RENDICONTO PER CASSA', titoloEs, { bold: true, h1: 30.6, h2: 25.2 });
     const RV = K.rpc;
     const codeFormula = (code) => {
@@ -1987,10 +2357,12 @@
       }
     });
     rc.pageSetup = { orientation: 'portrait', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 1, margins: { left: 0.315, right: 0.315, top: 0.354, bottom: 0.354, header: 0.315, footer: 0.315 }, printArea: 'A$1:I$71' };
+    }
 
     // ---------- Utilizzo contributi
+    if (inc.has('UTILIZZO CONTRIBUTI')) {
     const uc = wb.addWorksheet('UTILIZZO CONTRIBUTI');
-    [30.9, 10.3, 26.1, 9.1, 9.1, 9.1].forEach((w, i) => { uc.getColumn(i + 1).width = w; });
+    larghezze(uc, 'UTILIZZO CONTRIBUTI');
     const ent = (s.contributi && s.contributi.entrate) || [], usc = (s.contributi && s.contributi.uscite) || [];
     const nU = Math.max(ent.length, usc.length, 1);
     const totE = r2(ent.reduce((x, y) => x + num(y.importo), 0)), totU = r2(usc.reduce((x, y) => x + num(y.importo), 0));
@@ -2000,8 +2372,363 @@
     ucSet('E1', 'NETTO', 1); ucSet('F1', F('B1-D1', totE - totU), 1, 1);
     ent.forEach((e, i) => { ucSet('A' + (i + 2), e.desc || ''); ucSet('B' + (i + 2), r2(e.importo), 0, 1); });
     usc.forEach((e, i) => { ucSet('C' + (i + 2), e.desc || ''); ucSet('D' + (i + 2), r2(e.importo), 0, 1); });
+    }
 
     return wb;
+  }
+
+  // ---------------------------------------------------------------- Excel: registro pagamenti, situazione soci, anagrafica, ricevute
+  const XLSX_T = { style: 'thin' };
+  const BORDO = { left: XLSX_T, right: XLSX_T, top: XLSX_T, bottom: XLSX_T };
+  const MEZZO_COLORE = { sumup: 'FF92D050', banca: 'FFFFFF00', paypal: 'FFFFC000', satispay: 'FF00B0F0' };
+  const GRIGIO_REG = { theme: 0, tint: -0.4999847407452621 }; // bianco scurito al 50%, come nel registro
+  const pieno = (c) => ({ type: 'pattern', pattern: 'solid', fgColor: typeof c === 'string' ? { argb: c } : c });
+  const ggmm = (iso) => (iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) : '');
+  const impBreve = (v) => (Math.abs(v - Math.round(v)) < 0.005 ? String(Math.round(v)) : fmt(v));
+  function nomiFogli() {
+    const usati = new Set();
+    return (n) => {
+      const b = clean(String(n || '').replace(/[[\]:*?/\\]/g, ' ')).slice(0, 31) || 'Foglio';
+      let x = b, k = 2;
+      while (usati.has(x.toLowerCase())) x = b.slice(0, 28) + ' ' + k++;
+      usati.add(x.toLowerCase());
+      return x;
+    };
+  }
+  // il registro pagamenti come il file originale: un foglio per corso, nelle celle la data del pagamento
+  // (e l'importo se diverso dalla quota), colore del mezzo di pagamento, in grigio i mesi da non incassare,
+  // legenda dei colori in fondo. Il file si può ricaricare nel Bilancio.
+  function registroWorkbook(ExcelJS, L, s) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    const mesi = mesiEsercizio(s);
+    const ar = (sz, o) => ({ name: 'Arial', size: sz, ...(o || {}) });
+    const online = L.origine === 'online';
+    const nomeFoglio = nomiFogli();
+    (L.fogli || []).forEach((f) => {
+      const rows = (L.righe || []).filter((r) => r.foglio === f.nome).map((r) => ({ r, celle: new Map() }));
+      const perRiga = new Map(), perNome = new Map();
+      rows.forEach((x) => { if (!online && x.r.riga) perRiga.set(x.r.riga, x); const k = normNome(x.r.nomeReg); if (!perNome.has(k)) perNome.set(k, x); });
+      const pag = (L.pagamenti || []).filter((p) => p.foglio === f.nome).map((p) => ({ p, rosso: false }))
+        .concat((L.saltati || []).filter((p) => p.foglio === f.nome).map((p) => ({ p, rosso: true })));
+      let nMesi = Math.min(mesi.length, (f.mesi && f.mesi.length) || 11);
+      pag.forEach((y) => {
+        const p = y.p;
+        let x = (!online && p.riga && perRiga.get(p.riga)) || perNome.get(normNome(p.nomeReg));
+        if (!x) {
+          x = { r: { foglio: f.nome, nomeReg: p.nomeReg, assoc: false, mesi: [], cert: '', scad: null }, celle: new Map() };
+          rows.push(x); perNome.set(normNome(p.nomeReg), x);
+        }
+        const key = p.voce === 'assoc' ? 'I' : p.mese || '?';
+        if (p.voce !== 'assoc' && mesi.indexOf(p.mese) >= nMesi) nMesi = mesi.indexOf(p.mese) + 1;
+        if (!x.celle.has(key)) x.celle.set(key, []);
+        x.celle.get(key).push(y);
+      });
+      const ms = mesi.slice(0, nMesi);
+      const last = 5 + ms.length;
+      const ws = wb.addWorksheet(nomeFoglio(f.nome), {
+        views: [{ zoomScale: 130 }],
+        pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, verticalCentered: true, margins: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 } }
+      });
+      larghezze(ws, LARGHEZZE['reg:' + f.nome] ? 'reg:' + f.nome : 'reg:');
+      for (let c = 6; c <= last; c++) if (!ws.getColumn(c).width) ws.getColumn(c).width = 7.33203125;
+      ws.mergeCells(1, 1, 1, last);
+      const t1 = ws.getCell(1, 1);
+      t1.value = f.titolo || f.nome; t1.font = ar(20, { bold: true }); t1.alignment = { horizontal: 'center' };
+      ws.getRow(1).height = 24.6;
+      const h2 = ws.getRow(2);
+      h2.height = 15;
+      ['', 'Nominativo', 'cert.', 'data scad.', 'I'].concat(ms.map((ym) => INIZIALI_MESI[Number(ym.slice(5, 7)) - 1])).forEach((v, i) => {
+        const c = h2.getCell(i + 1);
+        c.value = v || null; c.border = BORDO;
+        c.font = ar(i === 2 || i === 3 || i === 0 ? 10 : 12);
+        if (i >= 2) c.alignment = { horizontal: 'center' };
+        if (i >= 4) c.numFmt = '@';
+      });
+      const atteso = (p) => (p.voce === 'assoc' ? num(s.par && s.par.quotaAssoc) : isNum(f.quota) ? Number(f.quota) : null);
+      const testo = (p) => {
+        if (!online) return p.testo || '';
+        const d = ggmm(p.data);
+        const a = atteso(p);
+        return clean(d + (isNum(p.importo) && (a === null || Math.abs(Number(p.importo) - a) > 0.005) ? ' ' + impBreve(Number(p.importo)) : ''));
+      };
+      rows.forEach((x, k) => {
+        const row = ws.getRow(k + 3);
+        row.height = 15;
+        const r = x.r;
+        for (let c = 1; c <= last; c++) { const cell = row.getCell(c); cell.border = BORDO; cell.font = ar(c === 2 || c >= 5 ? 12 : 10); if (c >= 3) cell.alignment = { horizontal: 'center' }; if (c >= 5) cell.numFmt = '@'; }
+        row.getCell(1).value = k + 1;
+        row.getCell(2).value = r.nomeReg || null;
+        row.getCell(3).value = r.cert || null;
+        if (r.scad) { row.getCell(4).value = toDate(r.scad); row.getCell(4).numFmt = DATEF; }
+        const metti = (c, key, grigia) => {
+          const cell = row.getCell(c);
+          const lista = x.celle.get(key);
+          if (lista && lista.length) {
+            cell.value = lista.map((y) => testo(y.p)).filter(Boolean).join(' ') || null;
+            const y = lista[0];
+            const col = y.rosso ? 'FFFF0000' : (y.p.colore && /^[0-9A-F]{8}$/.test(y.p.colore) ? y.p.colore : MEZZO_COLORE[y.p.mezzo]);
+            if (col) cell.fill = pieno(col);
+            if (!y.rosso && y.p.mezzo === 'allenatore') cell.font = ar(12, { bold: true, color: { argb: 'FFC00000' } });
+          } else if (grigia) cell.fill = pieno(GRIGIO_REG);
+        };
+        metti(5, 'I', r.assoc);
+        ms.forEach((ym, i) => metti(6 + i, ym, (r.mesi || []).includes(ym)));
+      });
+      // legenda dei colori, come in fondo ai fogli originali
+      const lr = ws.getRow(rows.length + 5);
+      [['SATISPAY', 'FF00B0F0'], ['POS', 'FF92D050'], ['BANCA', 'FFFFFF00'], ['CASH', null], ['PAYPAL', 'FFFFC000']].forEach(([v, col], i) => {
+        const c = lr.getCell(5 + i);
+        c.value = v; c.font = ar(10); c.alignment = { horizontal: 'center' }; c.border = BORDO;
+        if (col) c.fill = pieno(col);
+      });
+    });
+    if (!wb.worksheets.length) wb.addWorksheet('Registro').getCell('A1').value = 'Nessun corso nel registro.';
+    return wb;
+  }
+  // situazione soci: colonne come nel registro pagamenti (N., Nominativo, I, mesi), una riga per socio
+  function situazioneSociWorkbook(ExcelJS, list, s, opz) {
+    const o = opz || {};
+    const mesi = mesiEsercizio(s);
+    const now = o.mese || mesi[0];
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    const ar = (sz, x) => ({ name: 'Arial', size: sz, ...(x || {}) });
+    const ws = wb.addWorksheet('Situazione soci', {
+      views: [{ state: 'frozen', xSplit: 2, ySplit: 2, zoomScale: 130 }],
+      pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, printTitlesRow: '1:2', margins: { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } }
+    });
+    ws.properties.defaultColWidth = 8.88671875;
+    const last = 4 + mesi.length;
+    ws.getColumn(1).width = 3.109375;
+    ws.getColumn(2).width = 35.33203125;
+    for (let c = 3; c < last; c++) ws.getColumn(c).width = 7.33203125;
+    ws.getColumn(last).width = 9.5546875;
+    ws.mergeCells(1, 1, 1, last);
+    const t1 = ws.getCell(1, 1);
+    t1.value = 'SITUAZIONE SOCI – ESERCIZIO ' + s.es + (o.oggi ? ' – al ' + fmtData(o.oggi) : '');
+    t1.font = ar(16, { bold: true }); t1.alignment = { horizontal: 'center' };
+    ws.getRow(1).height = 24.6;
+    ['', 'Nominativo', 'I'].concat(mesi.map((ym) => INIZIALI_MESI[Number(ym.slice(5, 7)) - 1]), ['Versato €']).forEach((v, i) => {
+      const c = ws.getCell(2, i + 1);
+      c.value = v || null; c.font = ar(i === last - 1 ? 10 : 12); c.border = BORDO; if (i >= 2) c.alignment = { horizontal: 'center' };
+    });
+    const ROSSO = 'FFFFC7CE';
+    list.forEach((x, k) => {
+      const row = ws.getRow(k + 3);
+      row.height = 15;
+      const ni = nonIncassareSocio(s, x.nome);
+      for (let c = 1; c <= last; c++) { const cell = row.getCell(c); cell.border = BORDO; cell.font = ar(c === 1 || c === last ? 10 : 12); if (c >= 3) cell.alignment = { horizontal: 'center' }; if (c >= 3 && c < last) cell.numFmt = '@'; }
+      row.getCell(1).value = k + 1;
+      row.getCell(2).value = x.nome;
+      const ci = row.getCell(3);
+      if (x.assoc.length) ci.value = ggmm(x.assoc[x.assoc.length - 1].data);
+      else ci.fill = pieno(ni.assoc ? GRIGIO_REG : ROSSO);
+      const anyPart = x.mesi.size > 0;
+      mesi.forEach((ym, i) => {
+        const cell = row.getCell(4 + i);
+        if (x.mesi.has(ym)) {
+          const v = x.part.find((p) => p.mesi.includes(ym));
+          cell.value = v ? ggmm(v.data) : '✓';
+          if (x.forzati && x.forzati.has(ym)) cell.font = ar(12, { italic: true });
+        } else if (ni.mesi.has(ym)) cell.fill = pieno(GRIGIO_REG);
+        else if (anyPart && ym <= now) cell.fill = pieno(ROSSO);
+      });
+      const tv = row.getCell(last);
+      tv.value = r2(x.totale); tv.numFmt = ACC; tv.alignment = { horizontal: 'right' };
+    });
+    const base = list.length + 5;
+    [['data', null, 'pagato: data del pagamento (in corsivo se segnato a mano)'], ['', ROSSO, 'da versare / scaduto'], ['', GRIGIO_REG, 'da non incassare (grigio nel registro o segnato a mano)']].forEach(([v, col, txt], i) => {
+      const c = ws.getCell(base + i, 3);
+      c.value = v || null; c.border = BORDO; c.font = ar(10); c.alignment = { horizontal: 'center' };
+      if (col) c.fill = pieno(col);
+      const d = ws.getCell(base + i, 4); d.value = txt; d.font = ar(10);
+    });
+    return wb;
+  }
+  // anagrafica soci come il foglio DATI della maschera delle ricevute (stesse colonne e larghezze);
+  // in K il nome nel Libro Giornale, in L le note. Si può reimportare con «Importa dal foglio DATI».
+  function anagraficaWorkbook(ExcelJS, list, opz) {
+    const o = opz || {};
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    const ws = wb.addWorksheet('DATI', { views: [{ state: 'frozen', ySplit: 1 }], pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '1:1' } });
+    larghezze(ws, 'DATI');
+    ws.getColumn(12).width = 40;
+    const ar = (x) => ({ name: 'Arial', size: 10, ...(x || {}) });
+    const tit = ['SOCIO', 'RICEVUTO DA (CHI PAGA)', 'CODICE FISCALE', 'DISCIPLINA', 'MINORE', 'NATO A', 'NATO IL', 'RESIDENTE A', 'QUOTA MENSILE', 'TELEFONO', 'NOME NEL LIBRO GIORNALE', 'NOTE'];
+    tit.forEach((v, i) => { const c = ws.getCell(1, i + 1); c.value = v; c.font = ar({ bold: true }); c.fill = pieno('FFE2EDE7'); c.border = { bottom: XLSX_T }; c.alignment = { vertical: 'middle' }; });
+    list.forEach((a, k) => {
+      const row = ws.getRow(k + 2);
+      const v = [a.socio, a.pagatore, a.cf, a.disciplina, a.minore, a.natoA, a.natoIl ? toDate(a.natoIl) : null, a.residenza,
+        isNum(a.quota) ? Number(a.quota) : null, clean(a.telefono || '') || (a.senzaTelefono ? 'SENZA NUMERO TELEFONICO' : null),
+        (o.link && o.link.get(a.id)) || a.contabilita || null, a.note || null];
+      v.forEach((val, i) => {
+        const c = row.getCell(i + 1);
+        c.value = val === '' || val === undefined ? null : val;
+        c.font = ar();
+        if (val instanceof Date) c.numFmt = DATEF;
+      });
+    });
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: tit.length } };
+    return wb;
+  }
+  // ricevute emesse e quote ancora senza ricevuta; ogni colonna ha la larghezza del campo corrispondente
+  // nella maschera delle ricevute (fogli MASCHERA e DATI) o nel Libro Giornale
+  function ricevuteWorkbook(ExcelJS, emesse, senza, s, titolo) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    const ar = (x) => ({ name: 'Arial', size: 10, ...(x || {}) });
+    const foglio = (nome, col, righe) => {
+      const ws = wb.addWorksheet(nome, { views: [{ state: 'frozen', ySplit: 2 }], pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '1:2' } });
+      ws.mergeCells(1, 1, 1, col.length);
+      const t1 = ws.getCell(1, 1);
+      t1.value = (titolo || 'RICEVUTE') + ' – ' + nome.toUpperCase() + ' – ESERCIZIO ' + s.es;
+      t1.font = ar({ bold: true, size: 12 });
+      col.forEach(([t, w], i) => {
+        ws.getColumn(i + 1).width = w;
+        const c = ws.getCell(2, i + 1);
+        c.value = t; c.font = ar({ bold: true }); c.fill = pieno('FFE2EDE7'); c.border = { bottom: XLSX_T }; c.alignment = { vertical: 'middle', wrapText: true };
+      });
+      righe.forEach((v, k) => {
+        const row = ws.getRow(k + 3);
+        v.forEach((val, i) => {
+          const c = row.getCell(i + 1);
+          c.value = val === '' || val === undefined ? null : val;
+          c.font = ar();
+          if (val instanceof Date) { c.numFmt = DATEF; c.alignment = { horizontal: 'center' }; }
+          if (col[i][2] === 'eur') c.numFmt = ACC;
+        });
+      });
+      ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: col.length } };
+      return ws;
+    };
+    foglio('Ricevute emesse', [
+      ['N. RICEVUTA', 11.109375], ['DATA', 10.109375], ['RICEVUTO DA', 28.88671875], ['CODICE FISCALE', 20.109375], ['IMPORTO €', 17, 'eur'],
+      ['CAUSALE', 59.6640625], ['PERIODO DAL', 10.109375], ['AL', 10.109375], ['DISCIPLINA', 17.21875], ['MINORE', 28.5546875],
+      ['NATO A', 22.44140625], ['NATO IL', 10.109375], ['RESIDENTE A', 46.44140625], ['SOCIO IN CONTABILITÀ', 28.88671875], ['N. OPERAZIONE', 12.109375], ['STATO', 17]
+    ], emesse.map((r) => [r.numero, toDate(r.data), r.pagatore, r.cf, isNum(r.importo) ? r2(r.importo) : null, r.causale, toDate(r.dal), toDate(r.al), r.disciplina, r.minore,
+      r.natoA, toDate(r.natoIl), r.residenza, r.socio, r.op ? r.op._n : null, [r.stampata ? 'stampata' : '', r.inviata ? 'WhatsApp' : ''].filter(Boolean).join(', ')]));
+    foglio('Quote senza ricevuta', [['N. OPERAZIONE', 12.109375], ['DATA', 12.33203125], ['SOCIO', 28.88671875], ['IMPORTO €', 12.33203125, 'eur']],
+      senza.map((x) => [x.op._n, toDate(x.op.data), x.socio, isNum(x.importo) ? r2(x.importo) : null]));
+    return wb;
+  }
+
+  // ---------------------------------------------------------------- rendiconti come immagine (JPG)
+  // stessa impaginazione dei fogli Excel: colonne A–E larghe come nel file originale, Book Antiqua,
+  // stesse righe, stessi grassetti e stesse celle evidenziate in giallo
+  function reportSVG(tipo, s, K) {
+    const U = 15; // pixel per unità di larghezza di colonna di Excel (circa 7 pixel a 100%)
+    const k = U / 7;
+    const px = (ptv) => ptv * 96 / 72 * k;
+    const foglio = tipo === 'sp' ? 'Stato Patrimoniale' : 'Rendiconto Economico';
+    const lw = {};
+    LARGHEZZE[foglio][0].split(' ').forEach((x) => { const [c, w] = x.split(':'); lw[c] = Number(w); });
+    const cw = [lw.A, lw.B, 8.43, lw.D, lw.E].map((w) => w * U);
+    const M = 48;
+    const W = Math.round(cw.reduce((a, b) => a + b, 0) + 2 * M);
+    const cx = [M]; cw.forEach((w, i) => cx.push(cx[i] + w));
+    const R = new Map();
+    const riga = (r) => { if (!R.has(r)) R.set(r, { h: 13.8, celle: [] }); return R.get(r); };
+    const cella = (r, c, v, o) => { riga(r).celle.push({ c, v, ...(o || {}) }); };
+    const titoloEs = 'ESERCIZIO SOCIALE ' + s.es;
+    const titoli = (t1) => {
+      cella(1, -1, t1, { sz: 24 }); riga(1).h = 31.2;
+      cella(2, -1, titoloEs, { sz: 20 }); riga(2).h = 25.8;
+    };
+    let last;
+    if (tipo !== 'sp') {
+      const re = K.re;
+      titoli('RENDICONTO ECONOMICO');
+      riga(6).h = 18;
+      cella(6, 0, 'COSTI', { sz: 14, b: 1 }); cella(6, 3, 'RICAVI', { sz: 14, b: 1 });
+      const lay = (sezioni, cL, cV) => {
+        let r = 8;
+        sezioni.forEach((sez) => {
+          const rs = r++;
+          sez.gruppi.forEach((g) => {
+            const rg = r++;
+            if (g.single) {
+              const c = g.voci[0];
+              cella(rg, cL, c && c.label !== g.label ? c.label : g.label, { b: 1 }); cella(rg, cV, c ? c.v : 0, { b: 1, n: 1 });
+            } else {
+              cella(rg, cL, g.label, { b: 1 }); cella(rg, cV, g.v, { b: 1, n: 1 });
+              g.voci.forEach((vo) => { cella(r, cL, vo.label); cella(r, cV, vo.v, { n: 1 }); r++; });
+            }
+            r++;
+          });
+          cella(rs, cL, sez.label, { b: 1 }); cella(rs, cV, sez.v, { b: 1, n: 1 });
+        });
+        return r;
+      };
+      const T = Math.max(lay(re.costi, 0, 1), lay(re.ricavi, 3, 4));
+      const tot = (r, c, v, o) => cella(r, c, v, { b: 1, ...(o || {}) });
+      tot(T, 0, 'Totale costi'); tot(T, 1, re.totC, { n: 1 }); tot(T, 3, 'Totale ricavi'); tot(T, 4, re.totR, { n: 1 });
+      tot(T + 1, 0, 'Avanzo d\'esercizio'); tot(T + 1, 1, re.avanzo, { n: 1 }); tot(T + 1, 3, '(Disavanzo d\'esercizio)'); tot(T + 1, 4, re.disavanzo, { n: 1 });
+      tot(T + 2, 0, 'Totale a pareggio'); tot(T + 2, 1, re.totC + re.avanzo, { n: 1 }); tot(T + 2, 3, 'Totale a pareggio'); tot(T + 2, 4, re.totR + re.disavanzo, { n: 1 });
+      tot(T + 5, 0, 'RIEPILOGO');
+      tot(T + 7, 0, 'TOTALE RICAVI'); tot(T + 7, 1, re.totR, { n: 1, giallo: 1 });
+      tot(T + 9, 0, 'TOTALE COSTI'); tot(T + 9, 1, re.totC, { n: 1, giallo: 1 });
+      tot(T + 11, 0, 'SALDO FINALE'); tot(T + 11, 1, re.saldo, { n: 1, giallo: 1 });
+      last = T + 11;
+    } else {
+      const sp = K.sp;
+      titoli('STATO PATRIMONIALE');
+      riga(5).h = 18;
+      cella(5, 0, 'ATTIVITÀ', { sz: 14, b: 1 }); cella(5, 3, ' PASSIVITÀ', { sz: 14, b: 1 });
+      const lay = (gruppi, cL, cV) => {
+        let r = 7;
+        gruppi.forEach((g) => {
+          cella(r, cL, g.label, { b: 1 }); cella(r, cV, g.v, { b: 1, n: 1, giallo: !!g.evid });
+          r++;
+          g.voci.forEach((vo) => { cella(r, cL, vo.label); cella(r, cV, vo.v, { n: 1 }); r++; });
+          r++;
+        });
+        return r;
+      };
+      const TS = Math.max(lay(sp.attivo, 0, 1), lay(sp.passivo, 3, 4));
+      cella(TS, 0, 'TOTALE ATTIVITÀ', { b: 1 }); cella(TS, 1, sp.totA, { b: 1, n: 1 });
+      cella(TS, 3, 'TOTALE PASSIVITÀ', { b: 1 }); cella(TS, 4, sp.totP, { b: 1, n: 1 });
+      cella(TS + 1, 0, 'Disavanzo dell’esercizio'); cella(TS + 1, 1, sp.disavanzo, { n: 1 });
+      cella(TS + 1, 3, 'Avanzo dell’esercizio'); cella(TS + 1, 4, sp.avanzo, { n: 1 });
+      cella(TS + 2, 3, 'Fondo comune'); cella(TS + 2, 4, num(s.fondo), { n: 1 });
+      cella(TS + 4, 0, 'A PAREGGIO', { b: 1 }); cella(TS + 4, 1, sp.parA, { b: 1, n: 1 });
+      cella(TS + 4, 3, 'A PAREGGIO', { b: 1 }); cella(TS + 4, 4, sp.parP, { b: 1, n: 1 });
+      last = TS + 4;
+    }
+    const FONT = "'Book Antiqua', 'Palatino Linotype', Palatino, 'URW Palladio L', P052, 'TeX Gyre Pagella', Georgia, serif";
+    let y = M, body = '';
+    for (let r = 1; r <= last; r++) {
+      const x = riga(r);
+      const h = px(x.h);
+      x.celle.forEach((c) => {
+        const fs = px(c.sz || 10);
+        const base = y + h / 2 + fs * 0.34;
+        const pes = c.b ? ' font-weight="700"' : '';
+        if (c.c < 0) {
+          body += '<text x="' + (W / 2) + '" y="' + base.toFixed(1) + '" font-size="' + fs.toFixed(1) + '" text-anchor="middle"' + pes + '>' + xmlEsc(c.v) + '</text>';
+          return;
+        }
+        const x0 = cx[c.c], w = cw[c.c], pad = 3 * k;
+        if (c.n) {
+          if (c.giallo) body += '<rect x="' + x0.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + h.toFixed(1) + '" fill="#FFFF00"/>';
+          const v = num(c.v);
+          const tx = Math.abs(v) < 0.005 ? '-' : fmt(v);
+          body += '<text x="' + (x0 + w - pad - (Math.abs(v) < 0.005 ? 6 * k : 0)).toFixed(1) + '" y="' + base.toFixed(1) + '" font-size="' + fs.toFixed(1) + '" text-anchor="end"' + pes + '>' + xmlEsc(tx) + '</text>';
+        } else {
+          const t = String(c.v == null ? '' : c.v);
+          const stima = t.length * fs * (c.b ? 0.53 : 0.49);
+          const lim = (c.sz ? w + cw[c.c + 1] : w) - 2 * pad;
+          const fit = stima > lim ? ' textLength="' + lim.toFixed(1) + '" lengthAdjust="spacingAndGlyphs"' : '';
+          body += '<text x="' + (x0 + pad).toFixed(1) + '" y="' + base.toFixed(1) + '" font-size="' + fs.toFixed(1) + '"' + pes + fit + '>' + xmlEsc(t) + '</text>';
+        }
+      });
+      y += h;
+    }
+    const H = Math.round(y + M);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' +
+      '<rect width="100%" height="100%" fill="#fff"/><g font-family="' + FONT.replace(/"/g, '&quot;') + '" fill="#000">' + body + '</g></svg>';
+    return { svg, width: W, height: H };
   }
 
   // ---------------------------------------------------------------- Excel: importazione
@@ -2071,7 +2798,7 @@
           dare: isNum(d) && Number(d) !== 0 ? r2(d) : null,
           avere: isNum(e) && Number(e) !== 0 ? r2(e) : null,
           conto: f == null ? '' : clean(f),
-          ric: isNum(g) ? Number(g) : null
+          ...((lr) => (lr && lr.bis ? { ric: lr.n, ricBis: lr.bis } : { ric: lr ? lr.n : null }))(leggiNumeroRic(g))
         });
       }
     }
@@ -2183,9 +2910,9 @@
     ordina, numera, totaliOp, saldiConti, valoreConto, registroCassa, descCassaAuto,
     rendicontoEconomico, statoPatrimoniale, rendicontoCassa, calcola,
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
-    commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, storicoVoci,
-    numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
+    numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, esBreve,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;

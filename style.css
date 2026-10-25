@@ -23,6 +23,8 @@
   --m-paypal: #ffd98a;
   --m-satispay: #b4e3f6;
   --m-contanti: #ffffff;
+  --m-allenatore: #f7d4cf;
+  --rosso-all: #b3261e;
   --m-ink: #17211c;
   --grigio: #c9cfcb;
   --shadow: 0 1px 0 rgba(23, 33, 28, .04), 0 10px 28px -20px rgba(23, 33, 28, .35);
@@ -36,7 +38,7 @@
     --ground: #0e1412; --panel: #141c19; --ink: #e2eae5; --ink-2: #a3b3aa; --ink-3: #7b8b83;
     --rule: #2a3631; --rule-2: #1f2925; --accent: #79c9a6; --accent-hover: #93d6b8; --accent-soft: #1b2b24; --accent-ink: #0a1610;
     --red: #ff958a; --red-soft: #3a1d1a; --amber: #f0b552; --amber-soft: #33270f; --ok: #74d49d; --ok-soft: #15291e;
-    --m-sumup: #35511f; --m-banca: #555014; --m-paypal: #5a4211; --m-satispay: #17465a; --m-contanti: #141c19; --m-ink: #e2eae5;
+    --m-sumup: #35511f; --m-banca: #555014; --m-paypal: #5a4211; --m-satispay: #17465a; --m-contanti: #141c19; --m-allenatore: #4a1c18; --rosso-all: #ff8a80; --m-ink: #e2eae5;
     --grigio: #3a443f;
     --shadow: 0 1px 0 rgba(0, 0, 0, .3), 0 14px 30px -18px rgba(0, 0, 0, .8);
     color-scheme: dark;
@@ -142,6 +144,7 @@ table.mg td { padding: 0; }
 .cell.pag.banca { background: var(--m-banca); }
 .cell.pag.paypal { background: var(--m-paypal); }
 .cell.pag.satispay { background: var(--m-satispay); }
+.cell.pag.allenatore { background: var(--m-allenatore); color: var(--rosso-all); border-color: var(--rosso-all); font-weight: 700; }
 .cell.no { background: repeating-linear-gradient(135deg, var(--grigio) 0 4px, transparent 4px 8px); border-color: var(--grigio); color: var(--ink-3); text-decoration: line-through; cursor: default; }
 .cell.dovuto { border-color: var(--amber); color: var(--amber); background: var(--amber-soft); }
 .cell.sel { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -177,6 +180,10 @@ table.reg td.c.sumup { background: var(--m-sumup); color: var(--m-ink); }
 table.reg td.c.banca { background: var(--m-banca); color: var(--m-ink); }
 table.reg td.c.paypal { background: var(--m-paypal); color: var(--m-ink); }
 table.reg td.c.satispay { background: var(--m-satispay); color: var(--m-ink); }
+table.reg td.c.allenatore { background: var(--m-allenatore); color: var(--rosso-all); font-weight: 700; box-shadow: inset 0 0 0 2px var(--rosso-all); }
+.voce.da-consegnare { background: var(--m-allenatore); }
+.voce.da-consegnare small, .voce.da-consegnare b { color: var(--rosso-all); }
+.panel.da-consegnare { border: 2px solid var(--rosso-all); }
 table.reg td.c.no { background: repeating-linear-gradient(135deg, var(--grigio) 0 4px, transparent 4px 8px); }
 table.reg td.c.fuori { background: var(--rule-2); cursor: default; }
 table.reg td.c:hover { box-shadow: inset 0 0 0 2px var(--accent); }

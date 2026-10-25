@@ -4,10 +4,12 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '7cacacdc';
+  const VERSIONE_APP = '9e5d66ed';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
-  const MEZZI = { contanti: 'Contanti', sumup: 'SumUp', banca: 'Bonifico', paypal: 'PayPal', satispay: 'Satispay' };
+  // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
+  const MEZZI = { contanti: 'Contanti', allenatore: 'All’allenatore', sumup: 'SumUp', banca: 'Bonifico', paypal: 'PayPal', satispay: 'Satispay' };
+  const nomeMezzo = (m) => (m === 'allenatore' ? 'Contanti all’allenatore, da consegnare' : MEZZI[m] || m || '');
   const MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
   const MESI3 = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
   const INIZIALI = ['G', 'F', 'M', 'A', 'M', 'G', 'L', 'A', 'S', 'O', 'N', 'D'];
@@ -323,7 +325,7 @@
         if (!mc.has(ym)) { h += '<td><div class="cell fuori"></div></td>'; return; }
         const k = i.corso + '|' + ym;
         const pag = st.cell.get(k);
-        if (pag) { h += '<td><div class="cell pag ' + esc(pag[0].mezzo) + '" title="' + esc(meseNome(ym) + ': pagato il ' + fmtData(pag[0].data) + ' · ' + (MEZZI[pag[0].mezzo] || pag[0].mezzo)) + '">' + esc(ggmm(pag[0].data)) + '</div></td>'; return; }
+        if (pag) { h += '<td><div class="cell pag ' + esc(pag[0].mezzo) + '" title="' + esc(meseNome(ym) + ': pagato il ' + fmtData(pag[0].data) + ' · ' + nomeMezzo(pag[0].mezzo)) + '">' + esc(ggmm(pag[0].data)) + '</div></td>'; return; }
         if (nd.has(ym)) { h += '<td><div class="cell no" title="' + esc(meseNome(ym)) + ': da non incassare">' + INIZIALI[Number(ym.slice(5, 7)) - 1] + '</div></td>'; return; }
         const sel = !!F.sel[k];
         h += '<td><button type="button" class="cell' + (sel ? ' sel' : ym <= ora ? ' dovuto' : '') + '" data-mese="' + esc(k) + '" aria-pressed="' + sel + '" title="' + esc(meseNome(ym)) + '">' + mese3(ym) + '</button></td>';
@@ -403,7 +405,7 @@
         const pag = isIscr ? st.cell.get('I') : st.cell.get(k);
         if (pag && pag.length) {
           const att = pag.some((p) => inCoda('pagamenti', p.id));
-          return '<td class="c ' + esc(pag[0].mezzo) + (att ? ' attesa' : '') + '" data-cella="' + esc(so.id + '|' + c.id + '|' + (isIscr ? 'I' : k.split('|')[1])) + '" title="' + esc(label + ': ' + fmtData(pag[0].data) + ' · ' + (MEZZI[pag[0].mezzo] || '')) + '">' + esc(ggmm(pag[0].data)) + '</td>';
+          return '<td class="c ' + esc(pag[0].mezzo) + (att ? ' attesa' : '') + '" data-cella="' + esc(so.id + '|' + c.id + '|' + (isIscr ? 'I' : k.split('|')[1])) + '" title="' + esc(label + ': ' + fmtData(pag[0].data) + ' · ' + nomeMezzo(pag[0].mezzo)) + '">' + esc(ggmm(pag[0].data)) + '</td>';
         }
         const no = isIscr ? nd.has('I') : nd.has(k.split('|')[1]);
         return '<td class="c' + (no ? ' no' : '') + '" data-cella="' + esc(so.id + '|' + c.id + '|' + (isIscr ? 'I' : k.split('|')[1])) + '" title="' + esc(label + (no ? ': da non incassare' : '')) + '"></td>';
@@ -456,7 +458,7 @@
     const tot = r2(v.righe.reduce((x, p) => x + importoPag(p), 0));
     const att = v.righe.some((p) => inCoda('pagamenti', p.id));
     const so = socio(v.socio);
-    return '<button class="voce" data-vers="' + esc(v.id) + '"><span class="t"><b>' + esc(so ? so.nominativo : v.nominativo) + '</b><small>' + esc(descVersamento(v)) + '</small></span><span class="r"><b>€ ' + eur(tot) + '</b><small class="muted">' + esc(ggmm(v.data)) + ' · ' + esc(MEZZI[v.mezzo] || v.mezzo || '') + (att ? ' · <span style="color:var(--amber)">da inviare</span>' : '') + '</small></span></button>';
+    return '<button class="voce' + (v.mezzo === 'allenatore' ? ' da-consegnare' : '') + '" data-vers="' + esc(v.id) + '"><span class="t"><b>' + esc(so ? so.nominativo : v.nominativo) + '</b><small>' + esc(descVersamento(v)) + '</small></span><span class="r"><b>€ ' + eur(tot) + '</b><small class="muted">' + esc(ggmm(v.data)) + ' · ' + esc(v.mezzo === 'allenatore' ? 'all’allenatore' : MEZZI[v.mezzo] || v.mezzo || '') + (att ? ' · <span style="color:var(--amber)">da inviare</span>' : '') + '</small></span></button>';
   }
   function viewUltimi() {
     const toks = norm(S.qUltimi).split(' ').filter(Boolean);
@@ -464,6 +466,11 @@
     let h = '<div class="stack"><label class="field"><span>Cerca</span><input class="in" id="cerca-ultimi" type="search" value="' + esc(S.qUltimi) + '" placeholder="Nome o cognome"></label>';
     if (!lst.length) return h + '<div class="panel empty">Nessun incasso nel ' + esc(S.es) + '.</div></div>';
     let tot = 0;
+    const dc = versamenti().filter((v) => v.mezzo === 'allenatore' && v.righe.some((p) => p.esercizio === S.es));
+    if (dc.length) {
+      const t2 = r2(dc.reduce((x, v) => x + v.righe.reduce((y, p) => y + importoPag(p), 0), 0));
+      h += '<div class="msg err">Contanti ancora presso gli allenatori: € ' + eur(t2) + ' in ' + dc.length + (dc.length === 1 ? ' incasso' : ' incassi') + ' (in rosso). Quando il denaro arriva in cassa, apri l’incasso e premi «Consegnato in cassa».</div>';
+    }
     h += '<div class="panel"><div class="lista">';
     let giorno = null;
     lst.slice(0, 200).forEach((v) => {
@@ -519,8 +526,8 @@
     const label = mese === 'I' ? 'Iscrizione ' + S.es : meseNome(mese);
     let h = '<h3>' + esc(so.nominativo) + '</h3><div class="muted">' + esc(label) + ' · ' + esc(titoloCorso(c)) + '</div>';
     if (pag.length) {
-      h += pag.map((p) => '<div class="panel pad small"><b>Pagato il ' + esc(fmtData(p.data)) + '</b> · ' + esc(MEZZI[p.mezzo] || p.mezzo) + ' · € ' + eur(importoPag(p)) + (p.importo == null ? ' (quota)' : '') + (p.voce === 'iscrizione' && p.corso !== cid ? ' · registrata su ' + esc(nomeCorso(corso(p.corso))) : '') + '<div class="muted">' + esc([p.nota, p.dispositivo ? 'da ' + p.dispositivo : '', inCoda('pagamenti', p.id) ? 'da inviare al foglio' : ''].filter(Boolean).join(' · ')) + '</div>' +
-        '<div style="margin-top:8px"><button class="btn sm danger" data-elimina-pag="' + esc(p.id) + '">Elimina questo pagamento</button></div></div>').join('');
+      h += pag.map((p) => '<div class="panel pad small' + (p.mezzo === 'allenatore' ? ' da-consegnare' : '') + '"><b>Pagato il ' + esc(fmtData(p.data)) + '</b> · ' + esc(nomeMezzo(p.mezzo)) + ' · € ' + eur(importoPag(p)) + (p.importo == null ? ' (quota)' : '') + (p.voce === 'iscrizione' && p.corso !== cid ? ' · registrata su ' + esc(nomeCorso(corso(p.corso))) : '') + '<div class="muted">' + esc([p.nota, p.dispositivo ? 'da ' + p.dispositivo : '', inCoda('pagamenti', p.id) ? 'da inviare al foglio' : ''].filter(Boolean).join(' · ')) + '</div>' +
+        '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' + (p.mezzo === 'allenatore' ? '<button class="btn sm primary" data-consegna="' + esc(p.versamento || p.id) + '">Consegnato in cassa</button>' : '') + '<button class="btn sm danger" data-elimina-pag="' + esc(p.id) + '">Elimina questo pagamento</button></div></div>').join('');
     } else if (nd.has(mese)) {
       h += '<div class="msg warn">' + (mese === 'I' ? 'Iscrizione' : 'Mese') + ' da non incassare.</div><div class="azioni"><button class="btn" data-grigio="0">Togli il grigio</button></div>';
     } else {
@@ -616,12 +623,13 @@
     if (!v) return '<h3>Incasso non trovato</h3><div class="azioni"><button class="btn" data-act="chiudi">Chiudi</button></div>';
     const tot = r2(v.righe.reduce((x, p) => x + importoPag(p), 0));
     const so = socio(v.socio);
-    let h = '<h3>' + esc(so ? so.nominativo : v.nominativo) + '</h3><div class="muted">' + esc(fmtData(v.data)) + ' · ' + esc(MEZZI[v.mezzo] || v.mezzo) + ' · € ' + eur(tot) + '</div>' +
+    let h = '<h3>' + esc(so ? so.nominativo : v.nominativo) + '</h3><div class="muted">' + esc(fmtData(v.data)) + ' · ' + esc(nomeMezzo(v.mezzo)) + ' · € ' + eur(tot) + '</div>' +
+      (v.mezzo === 'allenatore' ? '<div class="msg err">Contanti ancora presso l’allenatore: non sono in cassa.</div>' : '') +
       '<table class="anteprima"><tbody>' + v.righe.slice().sort((a, b) => String(a.corso).localeCompare(String(b.corso)) || String(a.mese).localeCompare(String(b.mese))).map((p) => '<tr><td>' + esc(p.voce === 'iscrizione' ? 'Iscrizione ' + p.esercizio : nomeCorso(corso(p.corso)) + ' · ' + meseNome(p.mese)) + '</td><td class="num">€ ' + eur(importoPag(p)) + '</td></tr>').join('') + '</tbody></table>' +
       (v.righe[0].nota ? '<div class="small">' + esc(v.righe[0].nota) + '</div>' : '') +
       '<div class="small muted">' + esc(v.righe[0].dispositivo ? 'Registrato da ' + v.righe[0].dispositivo : '') + (v.righe.some((p) => inCoda('pagamenti', p.id)) ? ' · da inviare al foglio' : '') + '</div>';
     if (S.dialog.conferma) h += '<div class="msg err">Eliminare questo incasso? Se è già nel Bilancio, l’operazione in contabilità resta e va tolta a mano.</div><div class="azioni"><button class="btn ghost" data-act="chiudi">No</button><button class="btn primary" style="background:var(--red);border-color:var(--red)" data-act="elimina-vers-ok">Sì, elimina</button></div>';
-    else h += '<div class="azioni"><button class="btn danger" data-act="elimina-vers">Elimina</button><button class="btn" data-act="chiudi">Chiudi</button></div>';
+    else h += '<div class="azioni"><button class="btn danger" data-act="elimina-vers">Elimina</button>' + (v.mezzo === 'allenatore' ? '<button class="btn primary" data-consegna="' + esc(v.id) + '">Consegnato in cassa</button>' : '') + '<button class="btn" data-act="chiudi">Chiudi</button></div>';
     return h;
   }
 
@@ -858,6 +866,13 @@
       if (ds.togliIsc) { const i = S.dati.iscrizioni[ds.togliIsc]; if (i) { scrivi('iscrizioni', { ...i, eliminato: true }); salva(); renderDialog(); pianificaSync(800); } return; }
       if (ds.iscriviA) { iscrivi(S.dialog.sid, ds.iscriviA); const sid = S.dialog.sid; S.dialog = null; if (S.F && S.F.socio === sid) scegliSocio(sid); fatto(); return; }
       if (ds.iscriviSocio) { iscrivi(ds.iscriviSocio, S.corso); S.dialog = null; fatto(); return; }
+      if (ds.consegna) {
+        const quando = fmtData(oggi());
+        const lista = Object.values(S.dati.pagamenti).filter((p) => !p.eliminato && p.mezzo === 'allenatore' && (p.versamento === ds.consegna || p.id === ds.consegna));
+        lista.forEach((p) => scrivi('pagamenti', { ...p, mezzo: 'contanti', nota: ((p.nota ? p.nota + ' · ' : '') + 'consegnato in cassa il ' + quando) }));
+        S.dialog = null; fatto(); toast(lista.length ? 'Segnato: contanti consegnati in cassa il ' + quando + '.' : 'Niente da segnare.');
+        return;
+      }
       if (ds.eliminaPag) { const p = S.dati.pagamenti[ds.eliminaPag]; if (p) { scrivi('pagamenti', { ...p, eliminato: true }); S.dialog = null; fatto(); toast('Pagamento eliminato.', '', { label: 'Annulla', fn: () => { scrivi('pagamenti', { ...S.dati.pagamenti[p.id], eliminato: false }); fatto(); } }); } return; }
       if (ds.grigio !== undefined) {
         const { sid, cid, mese } = S.dialog;
