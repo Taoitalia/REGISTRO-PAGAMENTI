@@ -1,0 +1,17 @@
+{
+  "name": "Registro pagamenti",
+  "short_name": "Pagamenti",
+  "description": "Registro dei pagamenti dei corsi, anche offline.",
+  "lang": "it",
+  "start_url": "./#incassa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#edf1ee",
+  "theme_color": "#1d5a45",
+  "icons": [
+    { "src": "icone/icona-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icone/icona-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icone/icona-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
