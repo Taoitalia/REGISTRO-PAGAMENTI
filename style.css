@@ -218,3 +218,6 @@ table.reg td.c.attesa::after { content: "•"; color: var(--amber); font-weight:
 table.anteprima { width: 100%; border-collapse: collapse; font-size: 14px; }
 table.anteprima th, table.anteprima td { padding: 7px 6px; border-bottom: 1px solid var(--rule-2); text-align: left; }
 table.anteprima td .in { height: 36px; width: 80px; }
+/* casella grigia con un importo (resta solo nell'app) */
+.cell.no.imp { text-decoration: none; color: var(--ink); font-weight: 700; background: color-mix(in srgb, var(--grigio) 55%, transparent); }
+table.reg td.c.no.imp { background: color-mix(in srgb, var(--grigio) 55%, transparent); color: var(--ink); font-weight: 700; }

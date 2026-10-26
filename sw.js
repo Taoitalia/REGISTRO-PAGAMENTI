@@ -1,6 +1,6 @@
 /* Registro pagamenti — service worker: l'app si apre anche senza connessione */
-const CACHE = 'registro-pagamenti-9e5d66ed';
-const FILE = ['./', 'index.html', 'style.css?v=9e5d66ed', 'core.js?v=9e5d66ed', 'app.js?v=9e5d66ed', 'manifest.webmanifest', 'qrcode.js', 'icone/icona-192.png', 'icone/icona-512.png', 'icone/icona-maskable-512.png'];
+const CACHE = 'registro-pagamenti-6d791737';
+const FILE = ['./', 'index.html', 'style.css?v=6d791737', 'core.js?v=6d791737', 'app.js?v=6d791737', 'manifest.webmanifest', 'qrcode.js', 'icone/icona-192.png', 'icone/icona-512.png', 'icone/icona-maskable-512.png'];
 const EXCELJS = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
 
 self.addEventListener('install', (e) => {

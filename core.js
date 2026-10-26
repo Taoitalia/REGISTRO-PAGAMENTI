@@ -915,9 +915,13 @@
         celle.forEach((x) => {
           const cell = ws.getCell(r, x.c);
           const l = leggiCellaPagamento(valoreCella(cell), x.ym || s.inizio.slice(0, 7), s, oggi);
-          if (!l) {
-            const k = coloreCella(cell);
-            if (grigio(k) && !colori[k]) { if (x.voce === 'assoc') riga.assoc = true; else riga.mesi.push(x.ym); }
+          const kc = coloreCella(cell);
+          // cella grigia (da non incassare), vuota o con un importo senza data: l'importo resta solo nell'app
+          if (!l || (!l.data && isNum(l.importo) && grigio(kc) && !colori[kc])) {
+            if (grigio(kc) && !colori[kc]) {
+              if (x.voce === 'assoc') riga.assoc = true; else riga.mesi.push(x.ym);
+              if (l) (riga.importiNd = riga.importiNd || {})[x.voce === 'assoc' ? 'I' : x.ym] = l.importo;
+            }
             return;
           }
           any = true;
@@ -967,9 +971,10 @@
       return clean(maiuscola(so.cognome) + (ini ? ' ' + ini : ''));
     };
     const righe = iscr.map((i, k) => {
-      const nd = String(i.nonDovuti || '').split(',').map((x) => x.trim()).filter(Boolean);
+      // «2026-10» oppure «2026-10=20»: l'importo scritto nell'app nella casella grigia non arriva in contabilità
+      const nd = String(i.nonDovuti || '').split(',').map((x) => x.trim().split('=')[0]).filter(Boolean);
       const so = soci.get(i.socio);
-      return { foglio: String(corsi.get(i.corso).nome), riga: k + 1, nomeReg: clean(so.nominativo), assoc: nd.includes('I'), mesi: nd.filter((x) => /^\d{4}-\d{2}$/.test(x)), cert: so.certificato === true || so.certificato === 'true' ? 'X' : '', scad: so.scadenzaCert || null };
+      return { foglio: String(corsi.get(i.corso).nome), riga: k + 1, nomeReg: clean(so.nominativo), assoc: nd.includes('I'), mesi: nd.filter((x) => /^\d{4}-\d{2}$/.test(x)), cert: so.certificato === true || so.certificato === 'true' ? 'X' : '', scad: so.scadenzaCert || null, quota: i.quota !== null && i.quota !== '' && isNum(i.quota) ? Number(i.quota) : null };
     });
     const persone = new Map();
     const pagamenti = [];
@@ -1440,9 +1445,13 @@
     const corsiSoci = Array.from(cs.values()).map((y) => ({ n: y.n, c: Array.from(y.c).sort() })).sort((a, b) => a.n.localeCompare(b.n, 'it'));
     const nonIncassare = Array.from(ni.values()).map((y) => ({ n: y.n, m: Array.from(y.m || []).sort(), i: y.i, f: y.f, nomeReg: Array.from(y.nomeReg), fogli: Array.from(new Set(y.celle)) }))
       .filter((y) => y.m.length || y.i).sort((a, b) => a.n.localeCompare(b.n, 'it'));
+    // nome in contabilità di ogni persona del registro (serve alle quote da versare)
+    const nomiReg = {};
+    persone.forEach((x) => { if (x.nome && x.stato !== 'ambiguo' && x.stato !== 'incompleto') nomiReg[x.key] = x.nome; });
+    altri.forEach((x, k) => { if (x && x.nome) nomiReg[k] = x.nome; });
 
     return {
-      persone: Array.from(persone.values()), proposte, presenti, verificare, doppi, saltatiDaTe, quoteCorsi, nonIncassare, corsiSoci,
+      persone: Array.from(persone.values()), proposte, presenti, verificare, doppi, saltatiDaTe, quoteCorsi, nonIncassare, corsiSoci, nomiReg,
       soci: sociList.map((x) => x.nome).sort((a, b) => a.localeCompare(b, 'it'))
     };
   }
@@ -1954,6 +1963,7 @@
     'Stato Patrimoniale': ['A:34.88671875 B:10.88671875 D:34.88671875 E:10.88671875 F:11 G:9.88671875'],
     'Bilancio Banche': ['A:24.77734375 B:14.5546875 D-E:9.44140625 F:8.88671875 G:11 H:4 I:11'],
     'Cassa': ['A:10.88671875 B:12.33203125 C:59.33203125 D-E:8.88671875 F:9.5546875 G-H:8.88671875 I:9.5546875 J:12', 9.109375],
+    'Cassa basket': ['A:13.6640625 B:12.21875 C:56.5546875 D-I:12.21875 J:11.5546875 K-L:16.6640625', 9.33203125],
     'Rendiconto per Cassa': ['A:5.88671875 B:46.21875 C-D:11.109375 E:3.77734375 F:5.88671875 G:46.21875 H-I:11.109375 J:8.88671875 K:11', 8.88671875],
     'UTILIZZO CONTRIBUTI': ['A:30.88671875 B:10.33203125 C:26.109375 D:9.109375 F:9.109375'],
     'LIBRO SOCI': ['A:16 B:24.33203125 C:22 D:40 E:48 F:21.88671875 G:13.44140625 H:14.6640625 I:23.6640625 J:20.5546875 K:11.5546875', 9.109375],
@@ -2374,6 +2384,454 @@
     usc.forEach((e, i) => { ucSet('C' + (i + 2), e.desc || ''); ucSet('D' + (i + 2), r2(e.importo), 0, 1); });
     }
 
+    return wb;
+  }
+
+  // ---------------------------------------------------------------- cassa basket
+  // Movimenti di cassa e banca a carico del basket, ricavati dal Registro Cassa:
+  //  - quote associative: 100% per chi frequenta solo il basket, 50% per chi frequenta anche altri corsi (kung fu…);
+  //  - quote mensili: quelle dei corsi di basket secondo l'app Registro pagamenti (opz.mesi: id operazione → importo);
+  //    senza i dati dell'app, in proporzione alle quote dei corsi del socio;
+  //  - per le operazioni con commissioni (SumUp) la parte del basket è proporzionale all'incasso netto;
+  //  - op.basket = { importo } fissa a mano la parte del basket (spese, altri incassi, correzioni); { escludi: true } la toglie.
+  const isBasket = (corso) => /^basket/i.test(clean(corso || ''));
+  function quotaCorsoSalvata(s, corso) {
+    const q = ((s.registro && s.registro.quote) || []).find((x) => x.f === corso);
+    return q && isNum(q.q) ? Number(q.q) : 25;
+  }
+  function parteBasketOp(op, s, cr, opz) {
+    const o = opz || {};
+    const entrata = r2(cr.ce + cr.be), uscita = r2(cr.cu + cr.bu);
+    const colonna = (cr.ce || cr.cu) ? 'cassa' : 'diverse';
+    if (op.basket && op.basket.escludi) return null;
+    if (op.basket && isNum(op.basket.importo)) {
+      const v = r2(Math.abs(Number(op.basket.importo)));
+      if (!v) return null;
+      return { verso: entrata >= uscita ? 'e' : 'u', colonna, importo: v, fonte: 'manuale', dettagli: ['importo indicato a mano'] };
+    }
+    if (!(entrata > 0)) return null;
+    const app = (o.mesi && o.mesi[op.id]) || null; // { chiave socio: { mesi: importo dei mesi di basket, corsi: [...] } }
+    const corsiDi = (nome) => {
+      const set = new Set(corsiSocio(s, nome));
+      const a = app && app[chiaveSocio(nome)];
+      if (a) a.corsi.forEach((c) => set.add(c));
+      return Array.from(set);
+    };
+    let lordoQuote = 0, lordoBasket = 0;
+    const dettagli = [];
+    (op.righe || []).forEach((r) => {
+      const d = clean(r.desc);
+      const v = r2(num(r.avere) - num(r.dare));
+      let m = RX_ASSOC.exec(d);
+      if (m) {
+        lordoQuote += v;
+        const corsi = corsiDi(m[1]);
+        const b = corsi.filter(isBasket);
+        if (b.length) {
+          const quota = b.length === corsi.length ? 1 : 0.5;
+          lordoBasket += v * quota;
+          dettagli.push('quota associativa ' + clean(m[1]) + (quota < 1 ? ' al 50% (frequenta anche ' + corsi.filter((c) => !isBasket(c)).join(', ') + ')' : ''));
+        }
+        return;
+      }
+      m = RX_PART.exec(d) || RX_PART_NOMESE.exec(d);
+      if (!m) return;
+      lordoQuote += v;
+      const nome = clean(m[2]);
+      const corsi = corsiDi(nome);
+      const b = corsi.filter(isBasket);
+      if (!b.length) return;
+      if (b.length === corsi.length) { lordoBasket += v; dettagli.push('quota mensile ' + nome); return; }
+      // anche altri corsi: la parte del basket è quella dei pagamenti dei corsi di basket nell'app
+      const a = app && app[chiaveSocio(nome)];
+      if (a && a.mesi > 0) { const x = Math.min(v, a.mesi); lordoBasket += x; dettagli.push('quota mensile ' + nome + ': € ' + fmt(x) + ' dei corsi di basket secondo l’app'); return; }
+      const tot = corsi.reduce((x, c) => x + quotaCorsoSalvata(s, c), 0);
+      const qb = b.reduce((x, c) => x + quotaCorsoSalvata(s, c), 0);
+      const parte = tot ? v * qb / tot : v;
+      lordoBasket += parte;
+      dettagli.push('quota mensile ' + nome + ': parte del basket in proporzione alle quote dei corsi');
+    });
+    if (!(lordoBasket > 0.004) || !(lordoQuote > 0)) return null;
+    const importo = r2(Math.min(entrata, lordoBasket * entrata / lordoQuote));
+    if (Math.abs(entrata - lordoQuote) > 0.004 && importo > 0) dettagli.push('al netto delle commissioni, in proporzione');
+    return { verso: 'e', colonna, importo, fonte: 'quote', dettagli };
+  }
+  // dai pagamenti dell'app già in contabilità: per ogni operazione e socio, i corsi pagati e l'importo dei mesi di basket
+  function basketDaRegistro(A, s) {
+    const out = {};
+    ((A && A.presenti) || []).forEach((it) => {
+      const op = it.match && it.match.op;
+      if (!op || !it.nome || !it.foglio) return;
+      const k = chiaveSocio(it.nome);
+      const x = ((out[op.id] = out[op.id] || {})[k] = (out[op.id] || {})[k] || { mesi: 0, corsi: [] });
+      if (!x.corsi.includes(it.foglio)) x.corsi.push(it.foglio);
+      if (it.voce === 'mese' && isBasket(it.foglio)) x.mesi = r2(x.mesi + (isNum(it.importo) ? Number(it.importo) : quotaCorsoSalvata(s, it.foglio)));
+    });
+    return out;
+  }
+  function cassaBasket(s, K, opz) {
+    const b = s.basket || {};
+    const ini = { cassa: r2(num(b.saldoCassa)), diverse: r2(num(b.saldoDiverse)) };
+    const perc = isNum(b.trattenuta) ? Number(b.trattenuta) : 20;
+    let sc = ini.cassa, sd = ini.diverse, n = 0;
+    const tot = { ec: 0, uc: 0, ed: 0, ud: 0 };
+    const righe = [];
+    K.cassa.rows.forEach((cr) => {
+      const p = parteBasketOp(cr.op, s, cr, opz);
+      if (!p) return;
+      const x = { n: ++n, op: cr.op, nOp: cr.op._n, data: cr.op.data, desc: cr.desc, ec: 0, uc: 0, ed: 0, ud: 0, fonte: p.fonte, dettagli: p.dettagli, daConsegnare: !!cr.op.daConsegnare };
+      const k = (p.verso === 'e' ? 'e' : 'u') + (p.colonna === 'cassa' ? 'c' : 'd');
+      x[k] = p.importo;
+      sc = r2(sc + x.ec - x.uc); sd = r2(sd + x.ed - x.ud);
+      x.sc = sc; x.sd = sd;
+      Object.keys(tot).forEach((kk) => { tot[kk] = r2(tot[kk] + x[kk]); });
+      righe.push(x);
+    });
+    const entrate = r2(tot.ec + tot.ed);
+    const saldo = r2(sc + sd);
+    const trattenuta = r2(entrate * perc / 100);
+    const presso = r2(righe.filter((x) => x.daConsegnare).reduce((t, x) => t + x.ec, 0));
+    return { righe, ini, tot, saldoCassa: sc, saldoDiverse: sd, saldo, entrate, uscite: r2(tot.uc + tot.ud), perc, trattenuta, fondo: r2(saldo - trattenuta), presso, nPresso: righe.filter((x) => x.daConsegnare).length };
+  }
+  // la cassa basket in Excel, con l'impaginazione del file «Registro cassa TAO BASKET»
+  function cassaBasketWorkbook(ExcelJS, s, CB) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    wb.calcProperties = { fullCalcOnLoad: true };
+    const ws = wb.addWorksheet(String(s.es || 'Cassa basket').slice(0, 31), { views: [{ state: 'frozen', ySplit: 7 }] });
+    larghezze(ws, 'Cassa basket');
+    const ba = (o) => ({ name: 'Book Antiqua', size: 10, ...(o || {}) });
+    const ar = (o) => ({ name: 'Arial', size: 10, ...(o || {}) });
+    const thin = { style: 'thin' }, med = { style: 'medium' };
+    const pienoC = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+    const set = (addr, v, o) => { const c = ws.getCell(addr); c.value = v; Object.assign(c, o || {}); return c; };
+    ws.mergeCells('A1:I1'); ws.mergeCells('A2:I2'); ws.mergeCells('A4:C4'); ws.mergeCells('E4:F4');
+    set('A1', 'REGISTRO CASSA BASKET', { font: ba({ size: 24 }), alignment: { horizontal: 'center', vertical: 'middle' } });
+    set('A2', 'ESERCIZIO SOCIALE ' + s.es, { font: ba({ size: 20 }), alignment: { horizontal: 'center', vertical: 'middle' } });
+    ws.getRow(1).height = 31.2; ws.getRow(2).height = 25.2; ws.getRow(4).height = 25.2; ws.getRow(6).height = 27;
+    const n = CB.righe.length, ult = Math.max(7, 7 + n);
+    set('A4', 'FONDO DISPONIBILE', { font: ar({ size: 20, bold: true }), alignment: { horizontal: 'right', vertical: 'middle' } });
+    set('E4', { formula: 'K5-L5', result: CB.fondo }, { font: ar({ size: 20, bold: true }), numFmt: '#,##0.00', alignment: { horizontal: 'right', vertical: 'middle' } });
+    ['A', 'B', 'C', 'D', 'E', 'F'].forEach((c) => { ws.getCell(c + '4').border = { bottom: med }; });
+    set('K4', 'SALDO CASSA', { font: ar(), fill: pienoC('FF92D050'), alignment: { horizontal: 'center' } });
+    set('L4', 'TRATTENUTA', { font: ar(), fill: pienoC('FFFF0000'), alignment: { horizontal: 'center' } });
+    set('K5', { formula: 'F' + ult + '+I' + ult + '+J7', result: CB.saldo }, { font: ar(), fill: pienoC('FF92D050'), numFmt: ACC, alignment: { horizontal: 'center' } });
+    set('L5', { formula: '(SUM(D8:D' + ult + ')+SUM(G8:G' + ult + '))*' + CB.perc + '%', result: CB.trattenuta }, { font: ar(), fill: pienoC('FFFF0000'), numFmt: ACC, alignment: { horizontal: 'center' } });
+    if (CB.nPresso) {
+      set('K7', 'PRESSO ALLENATORI', { font: ar({ bold: true, color: { argb: 'FFC00000' } }), alignment: { horizontal: 'center' } });
+      set('K8', CB.presso, { font: ar({ bold: true, color: { argb: 'FFC00000' } }), numFmt: ACC, alignment: { horizontal: 'center' } });
+      set('K9', 'celle in rosso: contanti non ancora in cassa', { font: ar({ size: 8, italic: true, color: { argb: 'FFC00000' } }) });
+    }
+    const intest = ['N. operazione', 'Data', 'Operazione', 'Entrate            Cassa', 'Uscite    Cassa', 'Saldo Finale Cassa', 'Entrate Diverse', 'Uscite   Diverse', 'Saldo Finale Diverse'];
+    intest.forEach((t, i) => {
+      const c = ws.getRow(6).getCell(i + 1);
+      c.value = t; c.font = ar({ bold: true }); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      c.border = { left: i === 3 ? med : (i === 6 ? undefined : thin), right: (i === 5 || i === 8) ? med : (i === 2 ? undefined : thin), top: med, bottom: i === 5 ? med : undefined };
+    });
+    set('J6', 'BLACK OPS', { font: ar() });
+    set('J7', { formula: 'SUM(J8:J' + Math.max(ult, 41) + ')', result: 0 }, { font: ar() });
+    const riga = (r, vals, fC, fD, top) => {
+      const x = ws.getRow(r);
+      x.height = 15;
+      for (let c = 1; c <= 9; c++) {
+        const cell = x.getCell(c);
+        cell.font = ba();
+        cell.border = { left: (c === 1 || c === 4) ? med : thin, right: (c === 6 || c === 9) ? med : (c === 3 ? undefined : thin), top: top ? med : thin, bottom: thin };
+        if (c === 1) cell.alignment = { horizontal: 'right' };
+        if (c === 2) { cell.alignment = { horizontal: 'center' }; cell.numFmt = DATEF; }
+        if (c === 3) cell.alignment = { horizontal: 'left' };
+        if (c >= 4) { cell.numFmt = ACC; cell.alignment = { horizontal: 'right' }; }
+      }
+      vals.forEach((v, i) => { if (v !== undefined && v !== null && v !== 0) x.getCell(i + 1).value = v; });
+      x.getCell(6).value = fC; x.getCell(9).value = fD;
+    };
+    riga(7, [null, null, 'SALDO INIZIALE'], CB.ini.cassa, CB.ini.diverse, true);
+    ws.getCell('C7').fill = pienoC('FFFFFF00'); ws.getCell('F7').fill = pienoC('FFFFFF00');
+    CB.righe.forEach((x, i) => {
+      const r = 8 + i;
+      riga(r, [x.n, toDate(x.data), x.desc, x.ec, x.uc, undefined, x.ed, x.ud],
+        { formula: 'F' + (r - 1) + '+D' + r + '-E' + r, result: x.sc }, { formula: 'I' + (r - 1) + '+G' + r + '-H' + r, result: x.sd });
+      if (x.daConsegnare && x.ec) ws.getCell('D' + r).fill = pienoC('FFFF0000');
+    });
+    ws.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printArea: 'A$1:L$' + ult, printTitlesRow: '6:6', horizontalCentered: true, margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } };
+    return wb;
+  }
+  // il file «Registro cassa TAO BASKET»: saldi iniziali, percentuale della trattenuta e righe (con le celle rosse dei contanti presso gli allenatori)
+  function leggiCassaBasket(wb) {
+    const ws = (wb.worksheets || []).find((w) => /^saldo iniziale$/i.test(testoCella(w.getCell('C7'))) || /operazione/i.test(testoCella(w.getCell('C6')))) || wb.worksheets[0];
+    if (!ws) throw new Error('Il file non contiene fogli.');
+    // la riga con «SALDO INIZIALE» e le intestazioni
+    let rIni = 0;
+    for (let r = 1; r <= Math.min(ws.rowCount, 30) && !rIni; r++) if (/^saldo iniziale$/i.test(testoCella(ws.getCell(r, 3)))) rIni = r;
+    if (!rIni || !/operazione/i.test(testoCella(ws.getCell(rIni - 1, 3)))) throw new Error('Non è il registro della cassa basket: manca la riga «SALDO INIZIALE» sotto le intestazioni.');
+    const numero = (c) => { const v = valoreCella(c); return typeof v === 'number' && isFinite(v) ? r2(v) : (typeof v === 'string' && parseImporto(v) !== null ? parseImporto(v) : null); };
+    let perc = null;
+    for (let r = 1; r < rIni && perc === null; r++) for (let c = 1; c <= 16 && perc === null; c++) {
+      const v = ws.getCell(r, c).value;
+      const f = v && typeof v === 'object' && v.formula ? String(v.formula) : '';
+      const m = /\*\s*(\d+(?:[.,]\d+)?)\s*%/.exec(f);
+      if (m) perc = Number(m[1].replace(',', '.'));
+    }
+    const out = { foglio: ws.name, saldoCassa: numero(ws.getCell(rIni, 6)) || 0, saldoDiverse: numero(ws.getCell(rIni, 9)) || 0, trattenuta: perc, righe: [] };
+    for (let r = rIni + 1; r <= ws.rowCount; r++) {
+      const d = valoreCella(ws.getCell(r, 2));
+      const desc = testoCella(ws.getCell(r, 3));
+      const v = { ec: numero(ws.getCell(r, 4)), uc: numero(ws.getCell(r, 5)), ed: numero(ws.getCell(r, 7)), ud: numero(ws.getCell(r, 8)) };
+      if (!desc && !v.ec && !v.uc && !v.ed && !v.ud) continue;
+      if (!v.ec && !v.uc && !v.ed && !v.ud) continue;
+      out.righe.push({ r, n: numero(ws.getCell(r, 1)), data: d instanceof Date ? isoUTC(d) : null, desc, ...v, rosso: rosso(coloreCella(ws.getCell(r, 4))) || rosso(coloreCella(ws.getCell(r, 7))) });
+    }
+    return out;
+  }
+  // abbina le righe del registro basket alle operazioni del Libro Giornale
+  //  - uscite: diventano op.basket = { importo } (la parte della spesa a carico del basket)
+  //  - celle rosse: contanti ancora presso l'allenatore (op.daConsegnare)
+  //  - entrate: solo confronto con il calcolo (le quote seguono l'app e la regola del 50%)
+  const PAROLE_VUOTE = new Set(['quota', 'quote', 'assoc', 'associativa', 'part', 'att', 'sport', 'socio', 'soci', 'per', 'del', 'della', 'dei', 'con', 'pagamento', 'cassa', 'banca', 'alessandria']);
+  // parole significative; le iniziali si legano alla parola precedente («Repetto P.» → repetto, repetto_p)
+  const parole = (t) => {
+    const w = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+    const out = new Set();
+    w.forEach((x, i) => {
+      if (x.length >= 3 && !PAROLE_VUOTE.has(x) && !/^\d+$/.test(x)) out.add(x);
+      else if (x.length === 1 && /[a-z]/.test(x) && i > 0 && w[i - 1].length >= 3 && !PAROLE_VUOTE.has(w[i - 1])) out.add(w[i - 1] + '_' + x);
+    });
+    return out;
+  };
+  function somiglianza(a, b) {
+    const A = parole(a), B = parole(b);
+    if (!A.size || !B.size) return 0;
+    let n = 0; A.forEach((w) => { if (B.has(w)) n++; });
+    return n / Math.min(A.size, B.size);
+  }
+  const giorni = (a, b) => (a && b ? Math.round((Date.parse(a) - Date.parse(b)) / 86400000) : 999);
+  function abbinaCassaBasket(T, s, K, opz) {
+    const CB = cassaBasket(s, K, opz);
+    const perOp = new Map(CB.righe.map((x) => [x.op.id, x]));
+    const usati = new Set();
+    const out = { uscite: [], rosse: [], entrate: [], nonTrovate: [], uguali: 0 };
+    const scegli = (t, imp, filtro) => {
+      let best = null;
+      K.cassa.rows.forEach((cr) => {
+        if (usati.has(cr.op.id) || !filtro(cr)) return;
+        const dd = Math.abs(giorni(cr.op.data, t.data));
+        if (dd > 10) return;
+        const sim = somiglianza(t.desc, cr.desc + ' ' + (cr.op.righe || []).map((r) => r.desc).join(' '));
+        const tot = filtro.tot(cr);
+        const esatto = Math.abs(tot - imp) < 0.005;
+        if (!(sim > 0 || (esatto && dd === 0))) return;
+        if (dd > 3 && sim < 0.5) return;
+        const p = sim * 10 - dd + (esatto ? 3 : 0) + (dd === 0 ? 2 : 0) + (perOp.has(cr.op.id) ? 1 : 0);
+        if (!best || p > best.p) best = { cr, p, sim, dd };
+      });
+      return best;
+    };
+    T.righe.forEach((t) => {
+      const uscita = r2((t.uc || 0) + (t.ud || 0)), entrata = r2((t.ec || 0) + (t.ed || 0));
+      if (uscita > 0 && !(entrata > 0)) {
+        const f = (cr) => r2(cr.cu + cr.bu) >= uscita - 0.005; f.tot = (cr) => r2(cr.cu + cr.bu);
+        const b = scegli(t, uscita, f);
+        if (!b) { out.nonTrovate.push({ t, verso: 'u', importo: uscita }); return; }
+        usati.add(b.cr.op.id);
+        const ora = perOp.get(b.cr.op.id);
+        const giaUguale = ora && Math.abs(r2(ora.uc + ora.ud) - uscita) < 0.005;
+        if (giaUguale) { out.uguali++; return; }
+        out.uscite.push({ t, op: b.cr.op, cr: b.cr, importo: uscita, totale: r2(b.cr.cu + b.cr.bu), prima: ora ? r2(ora.uc + ora.ud) : 0 });
+        return;
+      }
+      if (!(entrata > 0)) return;
+      const f = (cr) => r2(cr.ce + cr.be) > 0; f.tot = (cr) => { const x = perOp.get(cr.op.id); return x ? r2(x.ec + x.ed) : r2(cr.ce + cr.be); };
+      const b = scegli(t, entrata, f);
+      if (!b) { out.nonTrovate.push({ t, verso: 'e', importo: entrata }); return; }
+      usati.add(b.cr.op.id);
+      const ora = perOp.get(b.cr.op.id);
+      const calc = ora ? r2(ora.ec + ora.ed) : 0;
+      if (Math.abs(calc - entrata) >= 0.005) out.entrate.push({ t, op: b.cr.op, importo: entrata, calcolato: calc, dettagli: ora ? ora.dettagli : [], data: b.dd ? b.cr.op.data : null });
+      else out.uguali++;
+      if (t.rosso && b.cr.ce > 0 && !b.cr.op.daConsegnare && !b.cr.op.consegnatoIl) out.rosse.push({ t, op: b.cr.op, importo: b.cr.ce });
+    });
+    // operazioni che il calcolo mette nella cassa basket ma che nel registro basket non ci sono
+    out.soloNoi = CB.righe.filter((x) => !usati.has(x.op.id)).map((x) => ({ op: x.op, desc: x.desc, importo: r2(x.ec + x.ed + x.uc + x.ud), verso: x.ec + x.ed > 0 ? 'e' : 'u', dettagli: x.dettagli }));
+    return out;
+  }
+
+  // ---------------------------------------------------------------- quote da versare (cruscotto)
+  // Quote ancora da versare secondo il registro pagamenti (app o file Excel) alla data «oggi»:
+  //  - iscrizione: una per socio, se non è pagata e non è grigia (da non incassare) in nessuno dei suoi corsi;
+  //  - mesi: per ogni corso, i mesi fino a quello in corso compreso che non sono pagati né grigi;
+  //  - le quote registrate nel Libro Giornale senza passare dall'app contano come pagate: per chi frequenta un
+  //    solo corso basta il mese; per chi ne frequenta più d'uno l'importo del mese copre prima i corsi pagati
+  //    nel registro, poi gli altri.
+  // opz: { oggi, nomi: {chiave registro: nome in contabilità}, quoteCorsi: {corso: quota} }
+  function quoteDaVersare(L, s, sortedOps, opz) {
+    const o = opz || {};
+    const oggi = o.oggi || oggiISO();
+    const ora = oggi.slice(0, 7);
+    const mesi = mesiEsercizio(s);
+    const par = s.par || {};
+    const qAss = isNum(par.quotaAssoc) ? Number(par.quotaAssoc) : 25;
+    const fogli = new Map(((L && L.fogli) || []).map((f) => [f.nome, f]));
+    const salvate = new Map(((s.registro && s.registro.quote) || []).map((q) => [q.f, q.q]));
+    const quotaFoglio = (f) => {
+      const q = o.quoteCorsi && o.quoteCorsi[f];
+      if (isNum(q)) return Number(q);
+      const fo = fogli.get(f);
+      if (fo && isNum(fo.quota)) return Number(fo.quota);
+      if (isNum(salvate.get(f))) return Number(salvate.get(f));
+      return num(par.quotaMese) || 25;
+    };
+    const fineCorso = (f) => { const fo = fogli.get(f); return fo && fo.ultimoMese ? fo.ultimoMese : mesi[mesi.length - 1]; };
+    const { soci } = sortedOps ? indiceQuote(sortedOps, s) : { soci: new Map() };
+    const persone = new Map();
+    const pers = (nomeReg) => {
+      const k = normNome(nomeReg);
+      if (!persone.has(k)) persone.set(k, { key: k, nomeReg: clean(nomeReg), isc: [], pagati: new Set(), assocPagata: false, nome: (o.nomi && o.nomi[k]) || '' });
+      return persone.get(k);
+    };
+    ((L && L.righe) || []).forEach((r) => { if (r.nomeReg && r.foglio) pers(r.nomeReg).isc.push(r); });
+    ((L && L.pagamenti) || []).concat((L && L.saltati) || []).forEach((p) => {
+      if (!p.nomeReg) return;
+      const x = pers(p.nomeReg);
+      if (p.voce === 'assoc') x.assocPagata = true; else if (p.mese) x.pagati.add(p.foglio + '|' + p.mese);
+    });
+    const out = [];
+    persone.forEach((x) => {
+      if (!x.isc.length) return;
+      const so = x.nome ? soci.get(chiaveSocio(x.nome)) : null;
+      const quota = (r) => (isNum(r.quota) ? Number(r.quota) : quotaFoglio(r.foglio));
+      const corsiSocio = Array.from(new Set(x.isc.map((r) => r.foglio)));
+      const voci = [];
+      if (!x.assocPagata && !x.isc.some((r) => r.assoc) && !(so && so.assoc.length)) voci.push({ voce: 'assoc', foglio: null, mese: null, importo: qAss });
+      mesi.filter((ym) => ym <= ora).forEach((ym) => {
+        const corsi = x.isc.filter((r) => ym <= fineCorso(r.foglio) && !(r.mesi || []).includes(ym));
+        if (!corsi.length) return;
+        const pagatiReg = corsi.filter((r) => x.pagati.has(r.foglio + '|' + ym));
+        let aperti = corsi.filter((r) => !x.pagati.has(r.foglio + '|' + ym));
+        if (!aperti.length) return;
+        const vg = so ? so.mesi.get(ym) : null;
+        if (vg && vg.length) {
+          if (corsiSocio.length === 1 || vg.some((v) => !isNum(v.perMese))) return;
+          let copre = r2(vg.reduce((t, v) => t + v.perMese, 0) - pagatiReg.reduce((t, r) => t + quota(r), 0));
+          aperti = aperti.filter((r) => { if (copre >= quota(r) - 0.004) { copre = r2(copre - quota(r)); return false; } return true; });
+        }
+        aperti.forEach((r) => voci.push({ voce: 'mese', foglio: r.foglio, mese: ym, importo: quota(r), corrente: ym === ora }));
+      });
+      if (!voci.length) return;
+      out.push({ key: x.key, nomeReg: x.nomeReg, nome: x.nome, corsi: corsiSocio, voci, totale: r2(voci.reduce((t, v) => t + v.importo, 0)) });
+    });
+    out.sort((a, b) => a.nomeReg.localeCompare(b.nomeReg, 'it'));
+    const tot = r2(out.reduce((t, x) => t + x.totale, 0));
+    const corrente = r2(out.reduce((t, x) => t + x.voci.filter((v) => v.corrente).reduce((u, v) => u + v.importo, 0), 0));
+    return { soci: out, totale: tot, meseCorrente: corrente, scadute: r2(tot - corrente), ora, oggi };
+  }
+  // copia ridotta del registro (corsi, iscrizioni, pagamenti), salvata nelle impostazioni: il cruscotto
+  // mostra le quote da versare anche quando l'app non è raggiungibile
+  function copiaRegistro(L, A) {
+    const qc = (A && A.quoteCorsi) || {};
+    const pag = new Map();
+    (L.pagamenti || []).concat(L.saltati || []).forEach((p) => {
+      if (!p.nomeReg) return;
+      const k = clean(p.nomeReg);
+      if (!pag.has(k)) pag.set(k, { n: k, a: false, m: [] });
+      const x = pag.get(k);
+      if (p.voce === 'assoc') x.a = true; else if (p.mese && !x.m.includes(p.foglio + '|' + p.mese)) x.m.push(p.foglio + '|' + p.mese);
+    });
+    return {
+      fogli: (L.fogli || []).map((f) => ({ nome: f.nome, ultimoMese: f.ultimoMese || null, quota: qc[f.nome] && isNum(qc[f.nome].valore) ? Number(qc[f.nome].valore) : (isNum(f.quota) ? Number(f.quota) : null) })),
+      righe: (L.righe || []).filter((r) => r.nomeReg).map((r) => ({ foglio: r.foglio, nomeReg: clean(r.nomeReg), assoc: !!r.assoc, mesi: (r.mesi || []).slice(), quota: isNum(r.quota) ? Number(r.quota) : null })),
+      pagati: Array.from(pag.values()).map((x) => ({ ...x, m: x.m.sort() })),
+      nomi: (A && A.nomiReg) || {}
+    };
+  }
+  function letturaDaCopia(c) {
+    const pagamenti = [];
+    ((c && c.pagati) || []).forEach((x) => {
+      if (x.a) pagamenti.push({ nomeReg: x.n, voce: 'assoc', foglio: null, mese: null });
+      (x.m || []).forEach((k) => { const i = k.lastIndexOf('|'); pagamenti.push({ nomeReg: x.n, voce: 'mese', foglio: k.slice(0, i), mese: k.slice(i + 1) }); });
+    });
+    const quoteCorsi = {};
+    ((c && c.fogli) || []).forEach((f) => { if (isNum(f.quota)) quoteCorsi[f.nome] = Number(f.quota); });
+    return { L: { fogli: (c && c.fogli) || [], righe: (c && c.righe) || [], pagamenti, saltati: [] }, nomi: (c && c.nomi) || {}, quoteCorsi };
+  }
+  // dati del cruscotto
+  function cruscotto(s, K, CB, DC) {
+    const t = { ce: 0, cu: 0, be: 0, bu: 0 };
+    K.cassa.rows.forEach((r) => { t.ce += r.ce; t.cu += r.cu; t.be += r.be; t.bu += r.bu; });
+    Object.keys(t).forEach((k) => { t[k] = r2(t[k]); });
+    const cassa = { iniziale: r2(num(s.saldi && s.saldi.cassa)), entrate: t.ce, uscite: t.cu, saldo: r2(K.cassa.finale.cassa), presso: r2(DC.totale), nPresso: DC.ops.length };
+    cassa.disponibile = r2(cassa.saldo - cassa.presso);
+    const banca = { iniziale: r2(num(s.saldi && s.saldi.banca)), entrate: t.be, uscite: t.bu, saldo: r2(K.cassa.finale.banca) };
+    return {
+      risultato: r2(K.re.saldo), ricavi: r2(K.re.totR), costi: r2(K.re.totC),
+      fondoBasket: CB.fondo, risultatoKungFu: r2(K.re.saldo - CB.fondo),
+      cassa, banca, totale: r2(cassa.saldo + banca.saldo), disponibile: r2(cassa.disponibile + banca.saldo)
+    };
+  }
+  function cruscottoWorkbook(ExcelJS, s, D, Q, opz) {
+    const o = opz || {};
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    wb.calcProperties = { fullCalcOnLoad: true };
+    const ar = (x) => ({ name: 'Arial', size: 10, ...(x || {}) });
+    const thin = { style: 'thin' };
+    const bordo = { left: thin, right: thin, top: thin, bottom: thin };
+    const ws = wb.addWorksheet('Cruscotto', { views: [{ showGridLines: false }] });
+    [44, 16, 16, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    const set = (addr, v, x) => { const c = ws.getCell(addr); c.value = v; Object.assign(c, x || {}); return c; };
+    ws.mergeCells('A1:D1'); ws.mergeCells('A2:D2');
+    set('A1', 'CRUSCOTTO', { font: { name: 'Book Antiqua', size: 22 }, alignment: { horizontal: 'center' } });
+    set('A2', 'ESERCIZIO SOCIALE ' + s.es + ' – situazione al ' + fmtData(o.oggi || oggiISO()), { font: { name: 'Book Antiqua', size: 13 }, alignment: { horizontal: 'center' } });
+    ws.getRow(1).height = 30;
+    const riga = (r, label, v, x) => {
+      set('A' + r, label, { font: ar({ bold: true, size: 12 }), border: bordo });
+      set('B' + r, v, { font: ar({ bold: true, size: 12, color: v < 0 ? { argb: 'FFC00000' } : undefined }), numFmt: ACC, border: bordo });
+      if (x) set('C' + r, x, { font: ar({ italic: true, size: 9, color: { argb: 'FF595959' } }) });
+    };
+    riga(4, 'RISULTATO D’ESERCIZIO', D.risultato, 'ricavi € ' + fmt(D.ricavi) + ' − costi € ' + fmt(D.costi));
+    riga(5, 'RISULTATO KUNG FU', { formula: 'B4-B6', result: D.risultatoKungFu }, 'risultato d’esercizio − fondo disponibile basket');
+    riga(6, 'FONDO DISPONIBILE BASKET', D.fondoBasket, 'dalla Cassa basket');
+    set('A8', 'CASH FLOW', { font: ar({ bold: true, size: 12 }) });
+    ['', 'CASSA', 'BANCA', 'TOTALE'].forEach((h, i) => { const c = ws.getRow(9).getCell(i + 1); c.value = h; c.font = ar({ bold: true }); c.alignment = { horizontal: 'center' }; c.border = bordo; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EDE7' } }; });
+    const cf = [
+      ['Saldo iniziale', D.cassa.iniziale, D.banca.iniziale],
+      ['Entrate', D.cassa.entrate, D.banca.entrate],
+      ['Uscite', D.cassa.uscite, D.banca.uscite],
+      ['Saldo da contabilità', { formula: 'B10+B11-B12', result: D.cassa.saldo }, { formula: 'C10+C11-C12', result: D.banca.saldo }],
+      ['Denaro presso gli allenatori', D.cassa.presso, null],
+      ['DISPONIBILE', { formula: 'B13-B14', result: D.cassa.disponibile }, { formula: 'C13-C14', result: D.banca.saldo }]
+    ];
+    cf.forEach((x, i) => {
+      const r = 10 + i;
+      const bold = i === 3 || i === 5;
+      set('A' + r, x[0], { font: ar({ bold, color: i === 4 ? { argb: 'FFC00000' } : undefined }), border: bordo });
+      set('B' + r, x[1], { font: ar({ bold, color: i === 4 ? { argb: 'FFC00000' } : undefined }), numFmt: ACC, border: bordo });
+      set('C' + r, x[2], { font: ar({ bold }), numFmt: ACC, border: bordo });
+      set('D' + r, { formula: 'B' + r + '+C' + r, result: r2(num(isNum(x[1]) ? x[1] : x[1] && x[1].result) + num(isNum(x[2]) ? x[2] : x[2] && x[2].result)) }, { font: ar({ bold }), numFmt: ACC, border: bordo });
+    });
+    if (Q) {
+      set('A17', 'QUOTE DA VERSARE', { font: ar({ bold: true, size: 12 }) });
+      set('A18', Q.soci.length + (Q.soci.length === 1 ? ' socio' : ' soci') + ' (dettaglio nel foglio «Quote da versare»)', { font: ar() });
+      set('B18', Q.totale, { font: ar({ bold: true }), numFmt: ACC });
+      set('A19', 'di cui mesi precedenti', { font: ar() }); set('B19', Q.scadute, { font: ar(), numFmt: ACC });
+      set('A20', 'di cui mese in corso (' + meseNome(Q.ora) + ')', { font: ar() }); set('B20', Q.meseCorrente, { font: ar(), numFmt: ACC });
+      const wq = wb.addWorksheet('Quote da versare', { views: [{ state: 'frozen', ySplit: 1 }] });
+      [34, 22, 14, 18, 12].forEach((w, i) => { wq.getColumn(i + 1).width = w; });
+      ['Socio', 'Corso', 'Voce', 'Mese', 'Importo'].forEach((h, i) => { const c = wq.getRow(1).getCell(i + 1); c.value = h; c.font = ar({ bold: true }); c.border = bordo; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EDE7' } }; });
+      let r = 2;
+      Q.soci.forEach((x) => {
+        x.voci.forEach((v, i) => {
+          const row = wq.getRow(r++);
+          [i === 0 ? x.nomeReg : '', v.foglio || '', v.voce === 'assoc' ? 'Iscrizione' : 'Quota mensile', v.mese ? meseNome(v.mese) : '', v.importo].forEach((val, j) => {
+            const c = row.getCell(j + 1); c.value = val; c.font = ar({ bold: j === 0 }); c.border = bordo; if (j === 4) c.numFmt = ACC;
+          });
+        });
+      });
+      const tr = wq.getRow(r);
+      tr.getCell(1).value = 'TOTALE'; tr.getCell(1).font = ar({ bold: true });
+      tr.getCell(5).value = { formula: 'SUM(E2:E' + (r - 1) + ')', result: Q.totale }; tr.getCell(5).font = ar({ bold: true }); tr.getCell(5).numFmt = ACC;
+      wq.pageSetup = { orientation: 'portrait', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '1:1' };
+    }
+    ws.pageSetup = { orientation: 'portrait', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 1 };
     return wb;
   }
 
@@ -2904,7 +3362,7 @@
   }
 
   const Core = {
-    r2, num, isNum, clean, fmt, parseImporto, fmtData, oggiISO, addMonths, ymLabel, meseNome,
+    r2, num, isNum, clean, fmt, parseImporto, fmtData, oggiISO, addMonths, fineMese, ymLabel, meseNome,
     RE, SP, TIPI, RPC_ROWS, RPC_CODES, CONTI_DEFAULT, rpcSide, rpcSection, gruppiPerTipo, gruppoLabel,
     nuoveImpostazioni, mesiEsercizio, chiaveMese, contoMap, contoFin, etichetta,
     ordina, numera, totaliOp, saldiConti, valoreConto, registroCassa, descCassaAuto,
@@ -2912,7 +3370,7 @@
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
     numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, cassaBasket, basketDaRegistro, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;

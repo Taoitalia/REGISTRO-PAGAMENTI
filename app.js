@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '9e5d66ed';
+  const VERSIONE_APP = '6d791737';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -108,7 +108,20 @@
   const iscrizioniSocio = (sid, es) => vivi('iscrizioni').filter((i) => i.socio === sid && i.esercizio === (es || S.es) && corso(i.corso));
   const iscrizioniCorso = (cid, es) => vivi('iscrizioni').filter((i) => i.corso === cid && i.esercizio === (es || S.es) && socio(i.socio));
   const pagamentiSocio = (sid, es) => vivi('pagamenti').filter((p) => p.socio === sid && p.esercizio === (es || S.es));
-  const nonDovuti = (isc) => new Set(String((isc && isc.nonDovuti) || '').split(',').map((x) => x.trim()).filter(Boolean));
+  // mesi (e iscrizione) da non incassare: «2026-10», oppure «2026-10=20» con un importo che resta solo nell'app
+  // (compare nella casella al posto della data; il Bilancio riceve il mese da non incassare, senza importo)
+  const vociNonDovute = (isc) => String((isc && isc.nonDovuti) || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const nonDovuti = (isc) => new Set(vociNonDovute(isc).map((x) => x.split('=')[0]));
+  function importiNonDovuti(isc) {
+    const m = new Map();
+    vociNonDovute(isc).forEach((x) => { const i = x.indexOf('='); if (i < 0) return; const v = Number(x.slice(i + 1)); if (x.slice(i + 1) !== '' && isFinite(v)) m.set(x.slice(0, i), v); });
+    return m;
+  }
+  function testoNonDovuti(set, importi) {
+    const arr = Array.from(set).sort((a, b) => (a === 'I' ? -1 : b === 'I' ? 1 : a.localeCompare(b)));
+    return arr.length ? arr.map((k) => (importi && importi.has(k) ? k + '=' + importi.get(k) : k)).join(',') : null;
+  }
+  const impBreve = (v) => (Math.abs(v - Math.round(v)) < 0.005 ? String(Math.round(v)) : eur(v));
   const quotaIsc = (isc) => { const c = corso(isc.corso); return isc.quota != null && isc.quota !== '' ? Number(isc.quota) : Number(c && c.quota) || 0; };
   const inCoda = (t, id) => S.coda.some((x) => x.t === t && x.r.id === id);
   // importo di un pagamento: quello scritto, oppure (pagamenti importati dall'Excel senza importo) la quota
@@ -326,7 +339,11 @@
         const k = i.corso + '|' + ym;
         const pag = st.cell.get(k);
         if (pag) { h += '<td><div class="cell pag ' + esc(pag[0].mezzo) + '" title="' + esc(meseNome(ym) + ': pagato il ' + fmtData(pag[0].data) + ' · ' + nomeMezzo(pag[0].mezzo)) + '">' + esc(ggmm(pag[0].data)) + '</div></td>'; return; }
-        if (nd.has(ym)) { h += '<td><div class="cell no" title="' + esc(meseNome(ym)) + ': da non incassare">' + INIZIALI[Number(ym.slice(5, 7)) - 1] + '</div></td>'; return; }
+        if (nd.has(ym)) {
+          const ind = importiNonDovuti(i).get(ym);
+          h += '<td><div class="cell no' + (ind != null ? ' imp' : '') + '" title="' + esc(meseNome(ym) + ': da non incassare' + (ind != null ? ' · € ' + eur(ind) + ' (solo nell’app)' : '')) + '">' + (ind != null ? '€ ' + esc(impBreve(ind)) : INIZIALI[Number(ym.slice(5, 7)) - 1]) + '</div></td>';
+          return;
+        }
         const sel = !!F.sel[k];
         h += '<td><button type="button" class="cell' + (sel ? ' sel' : ym <= ora ? ' dovuto' : '') + '" data-mese="' + esc(k) + '" aria-pressed="' + sel + '" title="' + esc(meseNome(ym)) + '">' + mese3(ym) + '</button></td>';
       });
@@ -408,7 +425,8 @@
           return '<td class="c ' + esc(pag[0].mezzo) + (att ? ' attesa' : '') + '" data-cella="' + esc(so.id + '|' + c.id + '|' + (isIscr ? 'I' : k.split('|')[1])) + '" title="' + esc(label + ': ' + fmtData(pag[0].data) + ' · ' + nomeMezzo(pag[0].mezzo)) + '">' + esc(ggmm(pag[0].data)) + '</td>';
         }
         const no = isIscr ? nd.has('I') : nd.has(k.split('|')[1]);
-        return '<td class="c' + (no ? ' no' : '') + '" data-cella="' + esc(so.id + '|' + c.id + '|' + (isIscr ? 'I' : k.split('|')[1])) + '" title="' + esc(label + (no ? ': da non incassare' : '')) + '"></td>';
+        const ind = no ? importiNonDovuti(i).get(isIscr ? 'I' : k.split('|')[1]) : undefined;
+        return '<td class="c' + (no ? ' no' : '') + (ind != null ? ' imp' : '') + '" data-cella="' + esc(so.id + '|' + c.id + '|' + (isIscr ? 'I' : k.split('|')[1])) + '" title="' + esc(label + (no ? ': da non incassare' : '') + (ind != null ? ' · € ' + eur(ind) + ' (solo nell’app)' : '')) + '">' + (ind != null ? esc(impBreve(ind)) : '') + '</td>';
       };
       h += cellaHtml('I', 'Iscrizione', true);
       mesi.forEach((ym) => { h += cellaHtml(c.id + '|' + ym, meseNome(ym), false); });
@@ -528,10 +546,16 @@
     if (pag.length) {
       h += pag.map((p) => '<div class="panel pad small' + (p.mezzo === 'allenatore' ? ' da-consegnare' : '') + '"><b>Pagato il ' + esc(fmtData(p.data)) + '</b> · ' + esc(nomeMezzo(p.mezzo)) + ' · € ' + eur(importoPag(p)) + (p.importo == null ? ' (quota)' : '') + (p.voce === 'iscrizione' && p.corso !== cid ? ' · registrata su ' + esc(nomeCorso(corso(p.corso))) : '') + '<div class="muted">' + esc([p.nota, p.dispositivo ? 'da ' + p.dispositivo : '', inCoda('pagamenti', p.id) ? 'da inviare al foglio' : ''].filter(Boolean).join(' · ')) + '</div>' +
         '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' + (p.mezzo === 'allenatore' ? '<button class="btn sm primary" data-consegna="' + esc(p.versamento || p.id) + '">Consegnato in cassa</button>' : '') + '<button class="btn sm danger" data-elimina-pag="' + esc(p.id) + '">Elimina questo pagamento</button></div></div>').join('');
-    } else if (nd.has(mese)) {
-      h += '<div class="msg warn">' + (mese === 'I' ? 'Iscrizione' : 'Mese') + ' da non incassare.</div><div class="azioni"><button class="btn" data-grigio="0">Togli il grigio</button></div>';
+    } else if (nd.has(mese) || S.dialog.grigio) {
+      // da non incassare, con un importo facoltativo che resta solo nell'app
+      const ind = importiNonDovuti(isc).get(mese);
+      const gia = nd.has(mese);
+      h += '<div class="msg warn">' + (mese === 'I' ? 'Iscrizione' : 'Mese') + ' da non incassare' + (gia && ind != null ? ' · € ' + eur(ind) : '') + '.</div>' +
+        '<label class="field"><span>Importo (facoltativo)</span><input class="in" id="nd-imp" inputmode="decimal" placeholder="nessun importo" value="' + esc(ind != null ? String(ind).replace('.', ',') : '') + '"' + (gia ? '' : ' autofocus') + '></label>' +
+        '<p class="small muted" style="margin:0">L’importo compare nella casella al posto della data e resta solo in quest’app: al Bilancio arriva il mese da non incassare, senza importo.</p>' +
+        '<div class="azioni">' + (gia ? '<button class="btn" data-grigio="0">Togli il grigio</button><button class="btn primary" data-act="grigio-ok">Salva l’importo</button>' : '<button class="btn" data-act="grigio-annulla">Annulla</button><button class="btn primary" data-act="grigio-ok">Da non incassare</button>') + '</div>';
     } else {
-      h += '<div class="azioni"><button class="btn" data-grigio="1">Da non incassare (grigio)</button><button class="btn primary" data-act="incassa-cella">Incassa</button></div>';
+      h += '<div class="azioni"><button class="btn" data-act="grigio-chiedi">Da non incassare (grigio)</button><button class="btn primary" data-act="incassa-cella">Incassa</button></div>';
     }
     return h + '<div class="azioni"><button class="btn ghost" data-act="chiudi">Chiudi</button></div>';
   }
@@ -775,8 +799,9 @@
     L.righe.forEach((r) => {
       const sid = idSocio[C.normNome(r.nomeReg)], cid = idCorso[r.foglio];
       const old = Object.values(S.dati.iscrizioni).find((i) => i.socio === sid && i.corso === cid && i.esercizio === es);
-      const nd = (r.assoc ? ['I'] : []).concat(r.mesi);
-      scrivi('iscrizioni', { ...(old || { id: 'i:' + C.normNome(r.nomeReg) + '|' + r.foglio + '|' + es, quota: null, note: null }), esercizio: es, socio: sid, corso: cid, nonDovuti: nd.length ? nd.join(',') : null, eliminato: false });
+      const nd = new Set((r.assoc ? ['I'] : []).concat(r.mesi));
+      const imp = new Map(Object.entries(r.importiNd || {}));
+      scrivi('iscrizioni', { ...(old || { id: 'i:' + C.normNome(r.nomeReg) + '|' + r.foglio + '|' + es, quota: null, note: null }), esercizio: es, socio: sid, corso: cid, nonDovuti: testoNonDovuti(nd, imp), eliminato: false });
     });
     // pagamenti: id fissi, così importare di nuovo aggiorna invece di duplicare
     a.ok.forEach((p) => {
@@ -874,10 +899,23 @@
         return;
       }
       if (ds.eliminaPag) { const p = S.dati.pagamenti[ds.eliminaPag]; if (p) { scrivi('pagamenti', { ...p, eliminato: true }); S.dialog = null; fatto(); toast('Pagamento eliminato.', '', { label: 'Annulla', fn: () => { scrivi('pagamenti', { ...S.dati.pagamenti[p.id], eliminato: false }); fatto(); } }); } return; }
-      if (ds.grigio !== undefined) {
+      if (act === 'grigio-chiedi') { S.dialog.grigio = true; renderDialog(); return; }
+      if (act === 'grigio-annulla') { S.dialog.grigio = false; renderDialog(); return; }
+      if (act === 'grigio-ok' || ds.grigio !== undefined) {
         const { sid, cid, mese } = S.dialog;
         const i = iscrizioniSocio(sid).find((x) => x.corso === cid);
-        if (i) { const nd = nonDovuti(i); if (ds.grigio === '1') nd.add(mese); else nd.delete(mese); scrivi('iscrizioni', { ...i, nonDovuti: nd.size ? Array.from(nd).sort((a, b) => (a === 'I' ? -1 : b === 'I' ? 1 : a.localeCompare(b))).join(',') : null }); }
+        const togli = ds.grigio === '0';
+        let v = null;
+        if (!togli) {
+          const tx = ($('#nd-imp') && $('#nd-imp').value) || '';
+          v = numIn(tx);
+          if (tx.trim() && (v == null || v < 0)) { toast('Importo non valido.', 'err'); return; }
+        }
+        if (i) {
+          const nd = nonDovuti(i), imp = importiNonDovuti(i);
+          if (togli) { nd.delete(mese); imp.delete(mese); } else { nd.add(mese); if (v != null && v > 0) imp.set(mese, Math.round(v * 100) / 100); else imp.delete(mese); }
+          scrivi('iscrizioni', { ...i, nonDovuti: testoNonDovuti(nd, imp) });
+        }
         S.dialog = null; fatto(); return;
       }
     });
