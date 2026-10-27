@@ -221,3 +221,7 @@ table.anteprima td .in { height: 36px; width: 80px; }
 /* casella grigia con un importo (resta solo nell'app) */
 .cell.no.imp { text-decoration: none; color: var(--ink); font-weight: 700; background: color-mix(in srgb, var(--grigio) 55%, transparent); }
 table.reg td.c.no.imp { background: color-mix(in srgb, var(--grigio) 55%, transparent); color: var(--ink); font-weight: 700; }
+/* togliere un socio */
+details.togli { border: 1px solid var(--rule, #d9e0dc); border-radius: 10px; padding: 10px 12px; }
+details.togli summary { cursor: pointer; font-weight: 700; color: var(--red, #a2372c); }
+details.togli .row { display: flex; gap: 10px; flex-wrap: wrap; }

@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '6d791737';
+  const VERSIONE_APP = '21f4d0e8';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -447,8 +447,14 @@
   }
   function viewSoci() {
     const toks = norm(S.qSoci).split(' ').filter(Boolean);
-    const lst = vivi('soci').filter((s) => toks.every((t) => norm(s.nominativo).includes(t))).sort((a, b) => a.nominativo.localeCompare(b.nominativo, 'it'));
-    let h = '<div class="stack"><div class="row" style="align-items:end"><label class="field" style="flex:3 1 220px"><span>Cerca</span><input class="in" id="cerca-soci" type="search" value="' + esc(S.qSoci) + '" placeholder="Nome o cognome"></label><div style="flex:0 0 auto"><button class="btn primary" data-act="nuovo-socio">+ Nuovo socio</button></div></div>';
+    const f = S.fSoci || '';
+    const conPag = new Set(vivi('pagamenti').filter((p) => p.esercizio === S.es).map((p) => p.socio));
+    const lst = vivi('soci').filter((s) => toks.every((t) => norm(s.nominativo).includes(t)))
+      .filter((s) => (f === 'senza' ? !conPag.has(s.id) : f === 'nonattivi' ? s.attivo === false : f === 'attivi' ? s.attivo !== false : true))
+      .sort((a, b) => a.nominativo.localeCompare(b.nominativo, 'it'));
+    let h = '<div class="stack"><div class="row" style="align-items:end"><label class="field" style="flex:3 1 220px"><span>Cerca</span><input class="in" id="cerca-soci" type="search" value="' + esc(S.qSoci) + '" placeholder="Nome o cognome"></label>' +
+      '<label class="field" style="flex:1 1 180px"><span>Mostra</span><select class="in" id="soci-filtro">' + [['', 'Tutti'], ['attivi', 'Attivi'], ['nonattivi', 'Non attivi'], ['senza', 'Senza pagamenti nel ' + S.es]].map(([k, l]) => '<option value="' + k + '"' + (k === f ? ' selected' : '') + '>' + esc(l) + '</option>').join('') + '</select></label>' +
+      '<div style="flex:0 0 auto"><button class="btn primary" data-act="nuovo-socio">+ Nuovo socio</button></div></div>';
     h += '<div class="panel"><div class="lista">' + (lst.length ? lst.slice(0, 300).map((so) => {
       const isc = iscrizioniSocio(so.id);
       return '<button class="voce" data-socio-ed="' + esc(so.id) + '"><span class="t"><b>' + esc(so.nominativo) + (so.attivo === false ? ' <span class="pill">non attivo</span>' : '') + '</b><small>' + esc(isc.map((i) => nomeCorso(corso(i.corso))).join(', ') || 'nessun corso nel ' + S.es) + (so.telefono ? ' · ' + esc(so.telefono) : '') + '</small></span><span class="r">' + statoCert(so) + '</span></button>';
@@ -583,9 +589,61 @@
     if (altri.length) h += '<div class="seg" style="margin-top:6px">' + altri.map((c) => '<button type="button" data-corso-sc="' + esc(c.id) + '" class="' + (v.corsi[c.id] ? 'on' : '') + '" aria-pressed="' + !!v.corsi[c.id] + '">' + (so ? '+ ' : '') + esc(c.nome) + '</button>').join('') + '</div>';
     h += '</div><label class="field"><span>Note</span><textarea class="in" data-v="note">' + esc(v.note) + '</textarea></label>';
     if (so) h += '<label class="small" style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-v="attivo"' + (v.attivo ? ' checked' : '') + '> Socio attivo</label>';
+    if (so) h += togliSocioHtml(so, isc);
     if (d.err) h += '<div class="msg err">' + esc(d.err) + '</div>';
     h += '<div class="azioni"><button class="btn ghost" data-act="chiudi">Annulla</button>' + (so ? '<button class="btn" data-act="socio-incassa">Incassa</button>' : '') + '<button class="btn primary" data-act="salva-socio">' + (so ? 'Salva' : d.perIncasso ? 'Crea e continua' : 'Crea il socio') + '</button></div>';
     return h;
+  }
+  // togliere un socio: «ha smesso» (i mesi da un certo mese in poi diventano da non incassare, i pagamenti restano)
+  // oppure eliminarlo dall'app, solo se non ha nessun pagamento (inserito per errore, doppio, mai venuto)
+  function togliSocioHtml(so, isc) {
+    const d = S.dialog;
+    const np = vivi('pagamenti').filter((p) => p.socio === so.id).length;
+    const mesi = mesiEs(S.es);
+    const ora = meseCorrente();
+    const def = mesi.includes(ora) ? ora : mesi[0];
+    let h = '<details class="togli"' + (d.togliAperto ? ' open' : '') + '><summary>Togli il socio</summary><div class="stack" style="gap:10px;margin-top:10px">';
+    if (isc.length) {
+      h += '<div><b>Ha smesso di frequentare</b><p class="small muted" style="margin:2px 0 8px">Dal mese scelto in poi i mesi non pagati di tutti i suoi corsi del ' + esc(S.es) + ' diventano da non incassare (grigi): non risultano più da versare, né qui né nel Bilancio. I pagamenti fatti restano e il socio viene segnato non attivo.</p>' +
+        '<div class="row" style="align-items:end"><label class="field" style="flex:1 1 160px"><span>Da</span><select class="in" id="sm-mese">' + mesi.map((ym) => '<option value="' + ym + '"' + (ym === def ? ' selected' : '') + '>' + esc(meseNome(ym)) + '</option>').join('') + '</select></label>' +
+        '<div style="flex:0 0 auto"><button class="btn" data-act="socio-smesso">Ha smesso</button></div></div></div>';
+    }
+    if (np) h += '<div><b>Elimina dall’app</b><p class="small muted" style="margin:2px 0 0">Non si può: ha ' + np + (np === 1 ? ' pagamento registrato' : ' pagamenti registrati') + '. Usa «Ha smesso», oppure elimina prima i pagamenti (in Ultimi o toccando le celle in Corsi).</p></div>';
+    else if (d.confElimina) h += '<div class="msg err">Eliminare ' + esc(so.nominativo) + ' e i suoi corsi dall’app?</div><div class="azioni" style="margin:0"><button class="btn ghost" data-act="socio-elimina-no">No</button><button class="btn primary" style="background:var(--red);border-color:var(--red)" data-act="socio-elimina-ok">Sì, elimina</button></div>';
+    else h += '<div><b>Elimina dall’app</b><p class="small muted" style="margin:2px 0 8px">Per un socio inserito per errore, doppio o che non è mai venuto: sparisce dall’elenco, dai corsi e dalle quote da versare. Non ha pagamenti, quindi la contabilità non cambia.</p><button class="btn danger" data-act="socio-elimina">Elimina il socio</button></div>';
+    return h + '</div></details>';
+  }
+  function socioSmesso() {
+    const { sid } = S.dialog;
+    const so = socio(sid);
+    const da = ($('#sm-mese') && $('#sm-mese').value) || meseCorrente();
+    const st = situazione(sid);
+    const prima = [{ t: 'soci', r: { ...so } }];
+    let n = 0;
+    iscrizioniSocio(sid).forEach((i) => {
+      const nd = nonDovuti(i), imp = importiNonDovuti(i);
+      const nuovi = mesiCorso(corso(i.corso)).filter((ym) => ym >= da && !st.cell.has(i.corso + '|' + ym) && !nd.has(ym));
+      if (!nuovi.length) return;
+      prima.push({ t: 'iscrizioni', r: { ...i } });
+      nuovi.forEach((ym) => nd.add(ym));
+      n += nuovi.length;
+      scrivi('iscrizioni', { ...i, nonDovuti: testoNonDovuti(nd, imp) });
+    });
+    scrivi('soci', { ...so, attivo: false });
+    S.dialog = null; fatto();
+    toast(so.nominativo + ': ' + (n ? n + (n === 1 ? ' mese' : ' mesi') + ' da ' + meseNome(da) + ' in poi da non incassare' : 'nessun mese da cambiare') + ', socio non attivo.', '', { label: 'Annulla', fn: () => { prima.forEach((x) => scrivi(x.t, x.r)); fatto(); toast('Annullato.'); } });
+  }
+  function eliminaSocio() {
+    const { sid } = S.dialog;
+    const so = socio(sid);
+    if (!so || vivi('pagamenti').some((p) => p.socio === sid)) { S.dialog.confElimina = false; renderDialog(); return; }
+    const isc = Object.values(S.dati.iscrizioni).filter((i) => i && i.socio === sid && !i.eliminato);
+    isc.forEach((i) => scrivi('iscrizioni', { ...i, eliminato: true }));
+    scrivi('soci', { ...so, eliminato: true });
+    S.dialog = null;
+    if (S.F && S.F.socio === sid) S.F = null;
+    fatto();
+    toast(so.nominativo + ' eliminato dall’app.', '', { label: 'Annulla', fn: () => { scrivi('soci', { ...S.dati.soci[sid], eliminato: false }); isc.forEach((i) => scrivi('iscrizioni', { ...S.dati.iscrizioni[i.id], eliminato: false })); fatto(); toast('Socio ripristinato.'); } });
   }
   function salvaSocio() {
     const d = S.dialog, v = d.v;
@@ -857,6 +915,10 @@
       if (act === 'iscrivi-corso') { apri({ tipo: 'iscrivi', q: '' }); return; }
       if (act === 'nuovo-socio-corso') { const cid = S.corso; apri({ tipo: 'socio', v: { cognome: '', nome: '', telefono: '', certificato: false, scadenzaCert: '', note: '', attivo: true, corsi: { [cid]: true } } }); return; }
       if (act === 'salva-socio') { salvaSocio(); return; }
+      if (act === 'socio-smesso') { socioSmesso(); return; }
+      if (act === 'socio-elimina') { S.dialog.confElimina = true; S.dialog.togliAperto = true; renderDialog(); return; }
+      if (act === 'socio-elimina-no') { S.dialog.confElimina = false; renderDialog(); return; }
+      if (act === 'socio-elimina-ok') { eliminaSocio(); return; }
       if (act === 'socio-incassa') { const sid = S.dialog.sid; S.dialog = null; scegliSocio(sid); location.hash = 'incassa'; vai('incassa'); return; }
       if (act === 'incassa-cella') { const { sid, cid, mese } = S.dialog; S.dialog = null; scegliSocio(sid, mese === 'I' ? {} : { [cid + '|' + mese]: true }); S.F.iscr = mese === 'I'; location.hash = 'incassa'; vai('incassa'); return; }
       if (act === 'elimina-vers') { S.dialog.conferma = true; renderDialog(); return; }
@@ -923,6 +985,7 @@
       const t = ev.target;
       if (t.id === 'cerca-socio') { S.F.q = t.value; render(); return; }
       if (t.id === 'cerca-soci') { S.qSoci = t.value; render(); return; }
+      if (t.id === 'soci-filtro') { S.fSoci = t.value; render(); return; }
       if (t.id === 'cerca-ultimi') { S.qUltimi = t.value; render(); return; }
       if (t.id === 'cerca-iscr') { S.dialog.q = t.value; renderDialog(); const n = $('#cerca-iscr'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } return; }
       if (t.dataset.v !== undefined && S.dialog && S.dialog.v) { S.dialog.v[t.dataset.v] = t.type === 'checkbox' ? t.checked : t.value; return; }
