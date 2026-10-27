@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '21f4d0e8';
+  const VERSIONE_APP = 'fb6aadb8';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -263,8 +263,10 @@
   function nuovoForm() {
     return { socio: null, q: '', sel: {}, iscr: false, quote: {}, impIscr: Number(S.conf.quotaIscrizione) || 25, mezzo: 'contanti', data: oggi(), nota: '', ricorda: {} };
   }
-  function scegliSocio(sid, preset) {
+  function scegliSocio(sid, preset, tieniUnisci) {
+    const u = tieniUnisci && S.F ? S.F.unisci : null;
     const F = S.F = nuovoForm();
+    if (u) F.unisci = u;
     F.socio = sid;
     const st = situazione(sid);
     st.isc.forEach((i) => { F.quote[i.corso] = quotaIsc(i); });
@@ -299,16 +301,16 @@
     if (!corsi().length) {
       return '<div class="panel pad stack"><h2>Benvenuto</h2><p class="muted">Per cominciare servono i corsi e i soci. Puoi importarli dal registro Excel (dal PC) oppure collegare l’app al Foglio Google, se su un altro dispositivo li hai già caricati.</p><div class="row"><a class="btn primary" href="#altro">Vai alle impostazioni</a></div></div>';
     }
-    let h = '<div class="stack">';
+    let h = '<div class="stack">' + bannerUnisci(F);
     if (!F.socio) {
       const q = norm(F.q);
       const toks = q.split(' ').filter(Boolean);
       const lst = toks.length ? vivi('soci').filter((s) => { const n = norm(s.nominativo); return toks.every((t) => n.includes(t)); }).sort((a, b) => a.nominativo.localeCompare(b.nominativo, 'it')).slice(0, 12) : [];
-      h += '<div class="panel pad stack"><h2 class="sez">Chi paga</h2>' +
+      h += '<div class="panel pad stack"><h2 class="sez">' + (F.unisci ? 'Chi altro paga con questo pagamento' : 'Chi paga') + '</h2>' +
         '<div class="cerca"><label class="field"><span>Cerca il socio</span><input class="in" id="cerca-socio" type="search" autocomplete="off" placeholder="Nome o cognome" value="' + esc(F.q) + '"></label>' +
         (lst.length ? '<div class="sugg" role="listbox">' + lst.map((s) => { const isc = iscrizioniSocio(s.id); return '<button type="button" data-socio="' + esc(s.id) + '"><span>' + esc(s.nominativo) + '</span><small>' + esc(isc.map((i) => nomeCorso(corso(i.corso))).join(', ') || 'nessun corso ' + S.es) + '</small></button>'; }).join('') + '</div>' : (toks.length ? '<div class="sugg"><div class="empty small">Nessun socio con questo nome.</div></div>' : '')) +
         '</div><div><button class="btn" data-act="nuovo-socio">+ Nuovo socio</button></div></div>';
-      h += ultimiBreve();
+      if (!F.unisci) h += ultimiBreve();
       return h + '</div>';
     }
     const so = socio(F.socio);
@@ -363,12 +365,18 @@
       (!righe.length && !F.iscr ? '<div class="muted small">Scegli almeno un mese o l’iscrizione.</div>' : '') +
       '</div><div class="totale"><span>Totale</span><span>€ ' + eur(tot) + '</span></div></div>';
 
-    // come e quando
-    h += '<div class="panel pad stack"><h2 class="sez">Come</h2><div class="seg" role="group" aria-label="Mezzo di pagamento">' +
-      Object.keys(MEZZI).map((m) => '<button type="button" data-mezzo="' + m + '" class="' + (F.mezzo === m ? 'on' : '') + '" aria-pressed="' + (F.mezzo === m) + '">' + (m === 'contanti' ? '' : '<span class="sw" style="background:var(--m-' + m + ')"></span>') + MEZZI[m] + '</button>').join('') + '</div>' +
-      '<div class="row"><label class="field"><span>Data del pagamento</span><input class="in" type="date" id="f-data" value="' + esc(F.data) + '" max="' + oggi() + '"></label>' +
-      '<label class="field" style="flex:2 1 200px"><span>Nota (facoltativa)</span><input class="in" id="f-nota" value="' + esc(F.nota) + '" placeholder="per esempio: paga anche per il fratello"></label></div></div>';
-    h += '<div class="savebar"><button class="btn primary big" data-act="registra"' + (tot > 0 ? '' : ' disabled') + '>Registra € ' + eur(tot) + '</button></div>';
+    // come e quando (nel pagamento unico restano quelli del primo socio)
+    if (F.unisci) {
+      h += '<div class="panel pad stack"><h2 class="sez">Come</h2><div class="small">' + esc(nomeMezzo(F.unisci.mezzo)) + ' · ' + esc(fmtData(F.unisci.data)) + '<span class="muted"> · come il resto del pagamento</span></div></div>';
+    } else {
+      h += '<div class="panel pad stack"><h2 class="sez">Come</h2><div class="seg" role="group" aria-label="Mezzo di pagamento">' +
+        Object.keys(MEZZI).map((m) => '<button type="button" data-mezzo="' + m + '" class="' + (F.mezzo === m ? 'on' : '') + '" aria-pressed="' + (F.mezzo === m) + '">' + (m === 'contanti' ? '' : '<span class="sw" style="background:var(--m-' + m + ')"></span>') + MEZZI[m] + '</button>').join('') + '</div>' +
+        '<div class="row"><label class="field"><span>Data del pagamento</span><input class="in" type="date" id="f-data" value="' + esc(F.data) + '" max="' + oggi() + '"></label>' +
+        '<label class="field" style="flex:2 1 200px"><span>Nota (facoltativa)</span><input class="in" id="f-nota" value="' + esc(F.nota) + '" placeholder="per esempio: genitore di Mario e Luca"></label></div></div>';
+    }
+    h += '<div class="panel pad stack"><h2 class="sez">' + (F.unisci ? 'Altri soci nello stesso pagamento?' : 'Paga anche per altri soci?') + '</h2><p class="small muted" style="margin:0">Per esempio un genitore che paga per due figli con un solo bonifico o un’unica somma in contanti: registra questo socio e aggiungi gli altri. Nel Bilancio sarà una sola scrittura. Pagamenti fatti separatamente, anche di soci con lo stesso cognome, restano scritture separate.</p>' +
+      '<div><button class="btn" data-act="registra-altro"' + (tot > 0 ? '' : ' disabled') + '>' + (F.unisci ? '+ Aggiungi e passa a un altro socio' : '+ Registra e aggiungi un altro socio') + '</button></div></div>';
+    h += '<div class="savebar"><button class="btn primary big" data-act="registra"' + (tot > 0 ? '' : ' disabled') + '>' + (F.unisci ? 'Aggiungi € ' + eur(tot) + ' e chiudi il pagamento' : 'Registra € ' + eur(tot)) + '</button></div>';
     return h + '</div>';
   }
   function ultimiBreve() {
@@ -376,15 +384,26 @@
     if (!v.length) return '';
     return '<div class="panel"><div class="gruppo-data">Ultimi incassi</div><div class="lista">' + v.map(voceVersamento).join('') + '</div></div>';
   }
-  function registraPagamento() {
+  // pagamento unico: più soci pagati con un solo movimento di denaro (stesso «versamento», stessa data e mezzo).
+  // Nel Bilancio un versamento diventa una sola scrittura; incassi separati restano scritture separate.
+  function bannerUnisci(F) {
+    const U = F.unisci;
+    if (!U) return '';
+    const tot = r2(U.soci.reduce((x, s) => x + s.tot, 0));
+    return '<div class="msg ok unisci"><div><b>Pagamento unico</b> · ' + esc(fmtData(U.data)) + ' · ' + esc(nomeMezzo(U.mezzo)) + '<br>' + U.soci.map((s) => esc(s.nome) + ' € ' + eur(s.tot)).join(' + ') + ' = € ' + eur(tot) +
+      '<div class="small">Scegli il prossimo socio pagato con lo stesso movimento di denaro. Nel Bilancio diventa una sola scrittura.</div></div><button class="btn sm" data-act="unisci-fine">Fine</button></div>';
+  }
+  function registraPagamento(continua) {
     const F = S.F;
     const so = socio(F.socio);
     const righe = righeImporto(F);
     if (!righe.length && !F.iscr) return;
-    if (!F.data) { toast('Indica la data del pagamento.', 'err'); return; }
+    const U = F.unisci;
+    const data = U ? U.data : F.data, mezzo = U ? U.mezzo : F.mezzo, nota = U ? U.nota : (F.nota || null);
+    if (!data) { toast('Indica la data del pagamento.', 'err'); return; }
     const st = situazione(F.socio);
-    const ver = uid('v');
-    const base = { versamento: ver, esercizio: S.es, data: F.data, socio: so.id, nominativo: so.nominativo, mezzo: F.mezzo, nota: F.nota || null, dispositivo: S.conf.dispositivo, creato: adesso(), eliminato: false };
+    const ver = U ? U.ver : uid('v');
+    const base = { versamento: ver, esercizio: S.es, data, socio: so.id, nominativo: so.nominativo, mezzo, nota: nota || null, dispositivo: S.conf.dispositivo, creato: adesso(), eliminato: false };
     const fatti = [];
     if (F.iscr) fatti.push(scrivi('pagamenti', { ...base, id: uid('p'), corso: st.isc[0].corso, voce: 'iscrizione', mese: null, importo: r2(num(F.impIscr)) }));
     righe.forEach((r) => {
@@ -392,10 +411,14 @@
       if (F.ricorda[r.corso]) scrivi('iscrizioni', { ...r.isc, quota: r2(r.quota) });
     });
     const tot = r2(fatti.reduce((x, p) => x + num(p.importo), 0));
+    const soci = (U ? U.soci : []).concat([{ nome: so.nominativo, tot }]);
     S.F = nuovoForm();
+    if (continua) S.F.unisci = { ver, data, mezzo, nota, soci };
     fatto();
-    toast('Registrato: ' + so.nominativo + ', € ' + eur(tot) + '.', '', { label: 'Annulla', fn: () => { fatti.forEach((p) => scrivi('pagamenti', { ...S.dati.pagamenti[p.id], eliminato: true })); fatto(); toast('Pagamento annullato.'); } });
+    const totU = r2(soci.reduce((x, s) => x + s.tot, 0));
+    toast((soci.length > 1 ? 'Pagamento unico: ' + soci.map((s) => s.nome).join(' + ') + ', € ' + eur(totU) : 'Registrato: ' + so.nominativo + ', € ' + eur(tot)) + '.' + (continua ? ' Scegli il prossimo socio.' : ''), '', { label: 'Annulla', fn: () => { fatti.forEach((p) => scrivi('pagamenti', { ...S.dati.pagamenti[p.id], eliminato: true })); if (S.F && S.F.unisci && S.F.unisci.ver === ver) { S.F.unisci.soci = S.F.unisci.soci.slice(0, -1); if (!S.F.unisci.soci.length) S.F.unisci = null; } fatto(); toast('Annullato: ' + so.nominativo + ', € ' + eur(tot) + '.'); } });
     window.scrollTo(0, 0);
+    if (continua) setTimeout(() => { const n = $('#cerca-socio'); if (n) n.focus(); }, 0);
   }
 
   // ------------------------------------------------------------------ vista: corsi (come il foglio Excel)
@@ -467,8 +490,10 @@
     const map = new Map();
     vivi('pagamenti').forEach((p) => {
       const k = p.versamento || p.id;
-      if (!map.has(k)) map.set(k, { id: k, data: p.data, creato: p.creato || p.modificato, socio: p.socio, nominativo: p.nominativo, mezzo: p.mezzo, righe: [] });
-      map.get(k).righe.push(p);
+      if (!map.has(k)) map.set(k, { id: k, data: p.data, creato: p.creato || p.modificato, socio: p.socio, nominativo: p.nominativo, mezzo: p.mezzo, righe: [], soci: [] });
+      const v = map.get(k);
+      v.righe.push(p);
+      if (!v.soci.some((x) => x.id === p.socio)) v.soci.push({ id: p.socio, nominativo: (socio(p.socio) || {}).nominativo || p.nominativo });
     });
     return Array.from(map.values()).sort((a, b) => (b.data || '').localeCompare(a.data || '') || String(b.creato || '').localeCompare(String(a.creato || '')));
   }
@@ -481,12 +506,11 @@
   function voceVersamento(v) {
     const tot = r2(v.righe.reduce((x, p) => x + importoPag(p), 0));
     const att = v.righe.some((p) => inCoda('pagamenti', p.id));
-    const so = socio(v.socio);
-    return '<button class="voce' + (v.mezzo === 'allenatore' ? ' da-consegnare' : '') + '" data-vers="' + esc(v.id) + '"><span class="t"><b>' + esc(so ? so.nominativo : v.nominativo) + '</b><small>' + esc(descVersamento(v)) + '</small></span><span class="r"><b>€ ' + eur(tot) + '</b><small class="muted">' + esc(ggmm(v.data)) + ' · ' + esc(v.mezzo === 'allenatore' ? 'all’allenatore' : MEZZI[v.mezzo] || v.mezzo || '') + (att ? ' · <span style="color:var(--amber)">da inviare</span>' : '') + '</small></span></button>';
+    return '<button class="voce' + (v.mezzo === 'allenatore' ? ' da-consegnare' : '') + '" data-vers="' + esc(v.id) + '"><span class="t"><b>' + esc(v.soci.map((x) => x.nominativo).join(' + ')) + (v.soci.length > 1 ? ' <span class="pill">pagamento unico</span>' : '') + '</b><small>' + esc(descVersamento(v)) + '</small></span><span class="r"><b>€ ' + eur(tot) + '</b><small class="muted">' + esc(ggmm(v.data)) + ' · ' + esc(v.mezzo === 'allenatore' ? 'all’allenatore' : MEZZI[v.mezzo] || v.mezzo || '') + (att ? ' · <span style="color:var(--amber)">da inviare</span>' : '') + '</small></span></button>';
   }
   function viewUltimi() {
     const toks = norm(S.qUltimi).split(' ').filter(Boolean);
-    const lst = versamenti().filter((v) => v.righe.some((p) => p.esercizio === S.es) && toks.every((t) => norm(v.nominativo).includes(t)));
+    const lst = versamenti().filter((v) => v.righe.some((p) => p.esercizio === S.es) && toks.every((t) => v.soci.some((x) => norm(x.nominativo).includes(t))));
     let h = '<div class="stack"><label class="field"><span>Cerca</span><input class="in" id="cerca-ultimi" type="search" value="' + esc(S.qUltimi) + '" placeholder="Nome o cognome"></label>';
     if (!lst.length) return h + '<div class="panel empty">Nessun incasso nel ' + esc(S.es) + '.</div></div>';
     let tot = 0;
@@ -673,7 +697,7 @@
     });
     const perIncasso = d.perIncasso;
     S.dialog = null;
-    if (perIncasso) { scegliSocio(rec.id); S.view = 'incassa'; if (location.hash !== '#incassa') location.hash = 'incassa'; }
+    if (perIncasso) { scegliSocio(rec.id, null, true); S.view = 'incassa'; if (location.hash !== '#incassa') location.hash = 'incassa'; }
     fatto();
     toast(so ? 'Socio aggiornato.' : 'Creato ' + nominativo + '.');
   }
@@ -704,15 +728,32 @@
     const v = versamenti().find((x) => x.id === S.dialog.id);
     if (!v) return '<h3>Incasso non trovato</h3><div class="azioni"><button class="btn" data-act="chiudi">Chiudi</button></div>';
     const tot = r2(v.righe.reduce((x, p) => x + importoPag(p), 0));
-    const so = socio(v.socio);
-    let h = '<h3>' + esc(so ? so.nominativo : v.nominativo) + '</h3><div class="muted">' + esc(fmtData(v.data)) + ' · ' + esc(nomeMezzo(v.mezzo)) + ' · € ' + eur(tot) + '</div>' +
+    const piu = v.soci.length > 1;
+    const ordSoci = new Map(v.soci.map((x, i) => [x.id, i]));
+    let h = '<h3>' + esc(v.soci.map((x) => x.nominativo).join(' + ')) + '</h3><div class="muted">' + esc(fmtData(v.data)) + ' · ' + esc(nomeMezzo(v.mezzo)) + ' · € ' + eur(tot) + (piu ? ' · pagamento unico per ' + v.soci.length + ' soci' : '') + '</div>' +
       (v.mezzo === 'allenatore' ? '<div class="msg err">Contanti ancora presso l’allenatore: non sono in cassa.</div>' : '') +
-      '<table class="anteprima"><tbody>' + v.righe.slice().sort((a, b) => String(a.corso).localeCompare(String(b.corso)) || String(a.mese).localeCompare(String(b.mese))).map((p) => '<tr><td>' + esc(p.voce === 'iscrizione' ? 'Iscrizione ' + p.esercizio : nomeCorso(corso(p.corso)) + ' · ' + meseNome(p.mese)) + '</td><td class="num">€ ' + eur(importoPag(p)) + '</td></tr>').join('') + '</tbody></table>' +
+      '<table class="anteprima"><tbody>' + v.righe.slice().sort((a, b) => (ordSoci.get(a.socio) - ordSoci.get(b.socio)) || String(a.corso).localeCompare(String(b.corso)) || String(a.mese).localeCompare(String(b.mese))).map((p) => '<tr><td>' + (piu ? '<b>' + esc((socio(p.socio) || {}).nominativo || p.nominativo) + '</b> · ' : '') + esc(p.voce === 'iscrizione' ? 'Iscrizione ' + p.esercizio : nomeCorso(corso(p.corso)) + ' · ' + meseNome(p.mese)) + '</td><td class="num">€ ' + eur(importoPag(p)) + '</td></tr>').join('') + '</tbody></table>' +
       (v.righe[0].nota ? '<div class="small">' + esc(v.righe[0].nota) + '</div>' : '') +
       '<div class="small muted">' + esc(v.righe[0].dispositivo ? 'Registrato da ' + v.righe[0].dispositivo : '') + (v.righe.some((p) => inCoda('pagamenti', p.id)) ? ' · da inviare al foglio' : '') + '</div>';
     if (S.dialog.conferma) h += '<div class="msg err">Eliminare questo incasso? Se è già nel Bilancio, l’operazione in contabilità resta e va tolta a mano.</div><div class="azioni"><button class="btn ghost" data-act="chiudi">No</button><button class="btn primary" style="background:var(--red);border-color:var(--red)" data-act="elimina-vers-ok">Sì, elimina</button></div>';
-    else h += '<div class="azioni"><button class="btn danger" data-act="elimina-vers">Elimina</button>' + (v.mezzo === 'allenatore' ? '<button class="btn primary" data-consegna="' + esc(v.id) + '">Consegnato in cassa</button>' : '') + '<button class="btn" data-act="chiudi">Chiudi</button></div>';
+    else if (S.dialog.unisci) {
+      // incassi dello stesso giorno e con lo stesso mezzo, da unire in un pagamento unico
+      const altri = versamenti().filter((x) => x.id !== v.id && x.data === v.data && x.mezzo === v.mezzo);
+      h += '<div class="msg ok">Scegli l’incasso pagato con lo stesso movimento di denaro (stesso giorno, ' + esc(nomeMezzo(v.mezzo)) + ').</div>' +
+        (altri.length ? '<div class="lista" style="margin:0 -16px">' + altri.map((x) => '<button class="voce" data-unisci-con="' + esc(x.id) + '"><span class="t"><b>' + esc(x.soci.map((y) => y.nominativo).join(' + ')) + '</b><small>' + esc(descVersamento(x)) + '</small></span><span class="r"><b>€ ' + eur(x.righe.reduce((y, p) => y + importoPag(p), 0)) + '</b></span></button>').join('') + '</div>' : '<div class="empty small">Nessun altro incasso del ' + esc(fmtData(v.data)) + ' con ' + esc(nomeMezzo(v.mezzo)) + '.</div>') +
+        '<div class="azioni"><button class="btn ghost" data-act="vers-unisci-no">Indietro</button></div>';
+    } else {
+      h += '<div class="small muted" style="margin-top:4px">Un incasso è un unico movimento di denaro: nel Bilancio diventa una sola scrittura, anche con più soci. Se è già registrato nel Bilancio, unire o separare qui non cambia la scrittura: va corretta a mano.</div>' +
+        '<div class="azioni" style="flex-wrap:wrap"><button class="btn" data-act="vers-aggiungi">+ Aggiungi un socio a questo pagamento</button><button class="btn" data-act="vers-unisci">Unisci con un altro incasso</button>' + (piu ? '<button class="btn" data-act="vers-separa">Separa i soci</button>' : '') + '</div>' +
+        '<div class="azioni"><button class="btn danger" data-act="elimina-vers">Elimina</button>' + (v.mezzo === 'allenatore' ? '<button class="btn primary" data-consegna="' + esc(v.id) + '">Consegnato in cassa</button>' : '') + '<button class="btn" data-act="chiudi">Chiudi</button></div>';
+    }
     return h;
+  }
+  // sposta i pagamenti di un incasso in un altro (pagamento unico) o li divide per socio
+  function riassegnaVersamento(righe, ver) {
+    const prima = righe.map((p) => ({ ...p }));
+    righe.forEach((p) => scrivi('pagamenti', { ...p, versamento: ver }));
+    return () => { prima.forEach((p) => scrivi('pagamenti', { ...S.dati.pagamenti[p.id], versamento: p.versamento })); fatto(); toast('Annullato.'); };
   }
 
   function dlgCorso() {
@@ -909,8 +950,30 @@
       if (act === 'sync') { if (collegato()) sincronizza(); else vai('altro'); return; }
       if (act === 'chiudi') { chiudi(); return; }
       if (act === 'nuovo-socio') { apri({ tipo: 'socio', perIncasso: S.view === 'incassa' }); return; }
-      if (act === 'cambia-socio') { S.F = nuovoForm(); render(); setTimeout(() => { const n = $('#cerca-socio'); if (n) n.focus(); }, 0); return; }
-      if (act === 'registra') { registraPagamento(); return; }
+      if (act === 'cambia-socio') { const u = S.F && S.F.unisci; S.F = nuovoForm(); if (u) S.F.unisci = u; render(); setTimeout(() => { const n = $('#cerca-socio'); if (n) n.focus(); }, 0); return; }
+      if (act === 'registra') { registraPagamento(false); return; }
+      if (act === 'registra-altro') { registraPagamento(true); return; }
+      if (act === 'unisci-fine') { S.F = nuovoForm(); render(); toast('Pagamento unico chiuso.'); return; }
+      if (act === 'vers-aggiungi') {
+        const v = versamenti().find((x) => x.id === S.dialog.id);
+        if (!v) return;
+        S.dialog = null;
+        S.F = nuovoForm();
+        S.F.unisci = { ver: v.id, data: v.data, mezzo: v.mezzo, nota: v.righe[0].nota || null, soci: v.soci.map((x) => ({ nome: x.nominativo, tot: r2(v.righe.filter((p) => p.socio === x.id).reduce((y, p) => y + importoPag(p), 0)) })) };
+        location.hash = 'incassa'; vai('incassa'); setTimeout(() => { const n = $('#cerca-socio'); if (n) n.focus(); }, 0);
+        return;
+      }
+      if (act === 'vers-unisci') { S.dialog.unisci = true; renderDialog(); return; }
+      if (act === 'vers-unisci-no') { S.dialog.unisci = false; renderDialog(); return; }
+      if (act === 'vers-separa') {
+        const v = versamenti().find((x) => x.id === S.dialog.id);
+        if (!v || v.soci.length < 2) return;
+        const prima = v.righe.map((p) => ({ ...p }));
+        v.soci.slice(1).forEach((x) => { const ver = uid('v'); v.righe.filter((p) => p.socio === x.id).forEach((p) => scrivi('pagamenti', { ...p, versamento: ver })); });
+        S.dialog = null; fatto();
+        toast('Incasso separato: ' + v.soci.length + ' pagamenti distinti.', '', { label: 'Annulla', fn: () => { prima.forEach((p) => scrivi('pagamenti', { ...S.dati.pagamenti[p.id], versamento: p.versamento })); fatto(); toast('Annullato.'); } });
+        return;
+      }
       if (act === 'iscrivi') { apri({ tipo: 'iscrivi', sid: ds.socio }); return; }
       if (act === 'iscrivi-corso') { apri({ tipo: 'iscrivi', q: '' }); return; }
       if (act === 'nuovo-socio-corso') { const cid = S.corso; apri({ tipo: 'socio', v: { cognome: '', nome: '', telefono: '', certificato: false, scadenzaCert: '', note: '', attivo: true, corsi: { [cid]: true } } }); return; }
@@ -940,7 +1003,15 @@
       if (act === 'condividi-link') { navigator.share({ title: 'Registro pagamenti', text: 'Collega l’app Registro pagamenti', url: linkCollega() }).catch(() => {}); return; }
       if (act === 'ricarica') { sincronizza(); return; }
       if (act === 'importa-ok') { importa(); return; }
-      if (ds.socio && el.closest('.sugg')) { scegliSocio(ds.socio); render(); return; }
+      if (ds.socio && el.closest('.sugg')) { scegliSocio(ds.socio, null, true); render(); return; }
+      if (ds.unisciCon) {
+        const v = versamenti().find((x) => x.id === S.dialog.id), w = versamenti().find((x) => x.id === ds.unisciCon);
+        if (!v || !w) return;
+        const annulla = riassegnaVersamento(w.righe, v.id);
+        S.dialog = null; fatto();
+        toast('Pagamento unico: ' + v.soci.concat(w.soci.filter((y) => !v.soci.some((z) => z.id === y.id))).map((y) => y.nominativo).join(' + ') + '.', '', { label: 'Annulla', fn: annulla });
+        return;
+      }
       if (ds.mese !== undefined && S.F) { S.F.sel[ds.mese] = !S.F.sel[ds.mese]; render(); return; }
       if (ds.iscr !== undefined && S.F) { S.F.iscr = !S.F.iscr; render(); return; }
       if (ds.mezzo) { S.F.mezzo = ds.mezzo; render(); return; }

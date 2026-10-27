@@ -225,3 +225,6 @@ table.reg td.c.no.imp { background: color-mix(in srgb, var(--grigio) 55%, transp
 details.togli { border: 1px solid var(--rule, #d9e0dc); border-radius: 10px; padding: 10px 12px; }
 details.togli summary { cursor: pointer; font-weight: 700; color: var(--red, #a2372c); }
 details.togli .row { display: flex; gap: 10px; flex-wrap: wrap; }
+/* pagamento unico per più soci */
+.msg.unisci { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.msg.unisci .small { margin-top: 4px; opacity: .85; }

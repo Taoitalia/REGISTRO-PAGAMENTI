@@ -1337,13 +1337,17 @@
       it.tipoPart = (so && so.tipo) || 'att';
     });
 
-    // 5. una scrittura per data, mezzo e famiglia
+    // 5. una scrittura per ogni pagamento: con l'app, un incasso (versamento) è un unico movimento di denaro e
+    //    può comprendere più soci pagati insieme; dal registro Excel, che non lo dice, una scrittura per socio.
+    //    Soci con lo stesso cognome non vengono più uniti se hanno pagato separatamente.
     const gruppi = new Map();
     nuovi.slice().sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0)).forEach((it) => {
       const mz = mezzoScrittura(it.mezzo), fam = famiglia(it.nome), dc = it.mezzo === 'allenatore';
-      const k = it.data + '|' + mz + '|' + fam + (dc ? '|allenatore' : '');
-      if (!gruppi.has(k)) gruppi.set(k, { id: k, data: it.data, mezzo: mz, famiglia: fam, daConsegnare: dc, voci: [] });
-      gruppi.get(k).voci.push(it);
+      const k = (it.versamento ? 'v:' + it.versamento + '|' + it.data : it.data + '|s:' + chiaveSocio(it.nome)) + '|' + mz + (dc ? '|allenatore' : '');
+      if (!gruppi.has(k)) gruppi.set(k, { id: k, data: it.data, mezzo: mz, famiglia: fam, famiglie: new Set(), daConsegnare: dc, voci: [], versamento: it.versamento || null });
+      const g = gruppi.get(k);
+      g.famiglie.add(fam);
+      g.voci.push(it);
     });
     const inRegistro = new Set();
     persone.forEach((x) => { if (x.nome) inRegistro.add(chiaveSocio(x.nome)); });
@@ -1360,13 +1364,15 @@
           if (v.data !== g.data || v.mezzo !== g.mezzo) return;
           const libere = v.voci.filter((vk) => !reclamate.has(v.op.id + '|' + so.key + '|' + vk));
           if (!libere.length) return;
-          const forte = famiglia(so.nome) === g.famiglia;
+          const forte = g.famiglie.has(famiglia(so.nome));
           if (forte || (!inRegistro.has(so.key) && totLinee.has(v.importo))) sospetti.push({ forte, n: v.op._n, op: v.op.id, desc: v.desc, importo: v.importo, mezzo: v.mezzo });
         });
       });
       const voci = g.voci;
+      const nSoci = new Set(voci.map((it) => chiaveSocio(it.nome))).size;
+      if (nSoci > 1) note.push('Pagamento unico per ' + nSoci + ' soci (stesso incasso nell’app): una sola scrittura.');
       proposte.push({
-        id: g.id, data: g.data, mezzo: g.mezzo, mezziReg, famiglia: g.famiglia, daConsegnare: !!g.daConsegnare, voci, note, sospetti,
+        id: g.id, data: g.data, mezzo: g.mezzo, mezziReg, famiglia: g.famiglia, daConsegnare: !!g.daConsegnare, voci, note, sospetti, nSoci,
         reg: voci.map((it) => it.ref),
         incluso: o.scelte && g.id in o.scelte ? !!o.scelte[g.id] : !sospetti.some((x) => x.forte)
       });
@@ -1456,14 +1462,28 @@
     };
   }
 
+  // un'operazione ha una ricevuta emessa se una sua riga ha il numero di ricevuta o se c'è il documento
+  const haRicevuta = (op) => (op.righe || []).some((r) => isNum(r.ric)) || !!(op.ricevute && op.ricevute.length);
+  // ultima operazione (in ordine di Libro Giornale) con una ricevuta emessa
+  function ultimaRicevuta(sortedOps) {
+    let op = null;
+    sortedOps.forEach((x) => { if (x.tipo !== 'apertura' && haRicevuta(x)) op = x; });
+    if (!op) return null;
+    const r = (op.righe || []).filter((y) => isNum(y.ric)).map((y) => Number(y.ric));
+    const sn = (op.ricevute || []).map((y) => y.numero).filter(Boolean);
+    return { op, ric: r.length ? Math.max(...r) : null, numero: sn.length ? sn[sn.length - 1] : null };
+  }
   // ord delle nuove operazioni (in ordine di data): dopo l'ultima registrazione con data uguale o precedente,
-  // oppure in fondo al Libro Giornale
-  function ordiniInserimento(sortedOps, date, cronologico) {
+  // ma mai prima di un'operazione con una ricevuta già emessa (i numeri di ricevuta seguono il Libro Giornale);
+  // oppure in fondo al Libro Giornale. opz.senzaRicevute: solo la data (per spiegare lo spostamento)
+  function ordiniInserimento(sortedOps, date, cronologico, opz) {
     const maxOrd = sortedOps.reduce((m, x) => Math.max(m, num(x.ord)), 0);
     if (!cronologico) return date.map((d, i) => maxOrd + 1 + i);
     const ap = sortedOps.find((x) => x.tipo === 'apertura');
     const ops = sortedOps.filter((x) => x.tipo !== 'apertura');
-    const pos = date.map((d) => { let k = -1; ops.forEach((x, i) => { if (x.data && x.data <= d) k = i; }); return k; });
+    let kRic = -1;
+    if (!(opz && opz.senzaRicevute)) ops.forEach((x, i) => { if (haRicevuta(x)) kRic = i; });
+    const pos = date.map((d) => { let k = -1; ops.forEach((x, i) => { if (x.data && x.data <= d) k = i; }); return Math.max(k, kRic); });
     const out = [];
     let i = 0;
     while (i < date.length) {
@@ -3370,7 +3390,7 @@
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
     numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, cassaBasket, basketDaRegistro, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, cassaBasket, basketDaRegistro, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;
