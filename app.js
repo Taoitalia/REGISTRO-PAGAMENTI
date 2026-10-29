@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = 'fb6aadb8';
+  const VERSIONE_APP = 'c096fe83';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -24,7 +24,7 @@
   const meseCorrente = () => oggi().slice(0, 7);
   const fmtData = (iso) => (iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4) : '');
   const ggmm = (iso) => (iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) : '');
-  const eur = (n) => (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const eur = (n) => (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: 'always' });
   const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
   const num = (v) => { const n = Number(String(v == null ? '' : v).replace(/\./g, '').replace(',', '.')); return isFinite(n) ? n : 0; };
   const numIn = (v) => { const t = String(v == null ? '' : v).trim(); if (!t) return null; const n = Number(t.replace(',', '.')); return isFinite(n) ? n : null; };
@@ -59,7 +59,9 @@
     qSoci: '',
     qUltimi: '',
     dialog: null,
-    imp: null
+    imp: null,
+    cr: null, // copia del cruscotto inviata dal Bilancio (dal Foglio Google)
+    versioneFoglio: null
   };
   function carica() {
     try {
@@ -71,6 +73,8 @@
         S.sync.ultima = x.ultima || null;
         if (x.es) S.es = x.es;
         if (x.corso) S.corso = x.corso;
+        if (x.cr) S.cr = x.cr;
+        if (x.versioneFoglio) S.versioneFoglio = x.versioneFoglio;
       }
     } catch (e) { console.warn(e); }
     if (!S.conf.dispositivo) {
@@ -79,7 +83,7 @@
     }
   }
   function salva() {
-    try { localStorage.setItem(KEY, JSON.stringify({ conf: S.conf, dati: S.dati, coda: S.coda, ultima: S.sync.ultima, es: S.es, corso: S.corso })); }
+    try { localStorage.setItem(KEY, JSON.stringify({ conf: S.conf, dati: S.dati, coda: S.coda, ultima: S.sync.ultima, es: S.es, corso: S.corso, cr: S.cr, versioneFoglio: S.versioneFoglio })); }
     catch (e) { console.warn(e); toast('Lo spazio del dispositivo è pieno: i dati non sono stati salvati.', 'err'); }
   }
 
@@ -188,6 +192,9 @@
           j = await chiama('GET', 'dati');
         }
         if (j.tabelle) applicaServer(j.tabelle);
+        // il cruscotto del Bilancio (script del foglio dalla versione 2)
+        if ('cruscotto' in j) S.cr = j.cruscotto || null;
+        if (j.versione) S.versioneFoglio = j.versione;
         S.sync.ultima = adesso();
         S.sync.errore = null;
         S.sync.stato = 'ok';
@@ -223,9 +230,12 @@
     corsi: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 4v16"/></svg>',
     soci: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.8.7 3 2.3 3.5 5.2"/></svg>',
     ultimi: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+    cruscotto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17a9 9 0 1 1 17 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13.5" r="1.4"/><path d="M3 20h18"/></svg>',
     altro: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>'
   };
-  const VISTE = [['incassa', 'Incassa'], ['corsi', 'Corsi'], ['soci', 'Soci'], ['ultimi', 'Ultimi'], ['altro', 'Altro']];
+  const VISTE = [['incassa', 'Incassa'], ['corsi', 'Corsi'], ['soci', 'Soci'], ['ultimi', 'Ultimi'], ['cruscotto', 'Cruscotto'], ['altro', 'Altro']];
+  // la sezione Cruscotto compare quando il Bilancio ha inviato i suoi dati
+  const visteAttive = () => VISTE.filter(([id]) => id !== 'cruscotto' || S.cr || S.view === 'cruscotto');
 
   function esercizi() {
     const set = new Set([esCorrente(), S.es]);
@@ -252,8 +262,8 @@
       '<header class="top"><h1><span class="t-lungo">Registro pagamenti</span><span class="t-corto">Pagamenti</span></h1>' +
       '<select id="es" aria-label="Anno sportivo">' + esercizi().map((e) => '<option' + (e === S.es ? ' selected' : '') + '>' + e + '</option>').join('') + '</select>' +
       '<span id="sync">' + htmlSync() + '</span></header>' +
-      '<nav class="tabs">' + VISTE.map(([id, l]) => '<a href="#' + id + '" class="' + (S.view === id ? 'on' : '') + '"' + (S.view === id ? ' aria-current="page"' : '') + '>' + ICONE[id] + '<span>' + l + '</span></a>').join('') + '</nav>' +
-      '<main>' + ({ incassa: viewIncassa, corsi: viewCorsi, soci: viewSoci, ultimi: viewUltimi, altro: viewAltro }[S.view] || viewIncassa)() + '</main>';
+      '<nav class="tabs">' + visteAttive().map(([id, l]) => '<a href="#' + id + '" class="' + (S.view === id ? 'on' : '') + '"' + (S.view === id ? ' aria-current="page"' : '') + '>' + ICONE[id] + '<span>' + l + '</span></a>').join('') + '</nav>' +
+      '<main>' + ({ incassa: viewIncassa, corsi: viewCorsi, soci: viewSoci, ultimi: viewUltimi, cruscotto: viewCruscotto, altro: viewAltro }[S.view] || viewIncassa)() + '</main>';
     renderDialog();
     if (att) { const n = document.getElementById(att); if (n && n.tagName === 'INPUT') { const v = n.value; n.focus(); try { n.setSelectionRange(v.length, v.length); } catch (e) { /* */ } } }
     window.scrollTo(0, y);
@@ -527,6 +537,39 @@
     });
     lst.forEach((v) => v.righe.forEach((p) => { tot += importoPag(p); }));
     return h + '</div></div><p class="small muted">' + lst.length + ' incassi · € ' + eur(tot) + (lst.length > 200 ? ' · mostrati gli ultimi 200' : '') + '</p></div>';
+  }
+
+  // ------------------------------------------------------------------ vista: cruscotto (dal Bilancio)
+  // Il Bilancio, all'apertura sul PC collegato al Foglio Google, vi lascia una copia del suo cruscotto
+  // (risultati, fondi, cassa e banca); l'app la riceve quando si sincronizza.
+  function viewCruscotto() {
+    const D = S.cr;
+    if (!D) return '<div class="panel pad stack"><h2>Cruscotto</h2><p class="muted" style="margin:0">Il cruscotto arriva dal programma Bilancio: compare qui dopo che il Bilancio, sul PC collegato a questo Foglio Google, è stato aperto' + (S.versioneFoglio && S.versioneFoglio < 2 ? '. Prima va aggiornato lo script del Foglio Google (vedi il manuale).' : '.') + '</p></div>';
+    const segno = (v) => (v < -0.004 ? ' neg' : '');
+    const quando = D.creato ? new Date(D.creato) : null;
+    const giorni = quando ? Math.floor((Date.now() - quando.getTime()) / 86400000) : 0;
+    const quandoT = quando ? (quando.toDateString() === new Date().toDateString() ? 'oggi' : 'il ' + quando.toLocaleDateString('it-IT')) + ' alle ' + quando.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+    const card = (t, v, sotto) => '<div class="cr-card"><span>' + esc(t) + '</span><b class="' + segno(v) + '">€ ' + eur(v) + '</b><small>' + sotto + '</small></div>';
+    let h = '<div class="stack">';
+    h += '<div><h2 class="cr-tit">Cruscotto</h2><p class="small muted" style="margin:2px 0 0">Dati del Bilancio, esercizio ' + esc(D.es) + ': aggiornati ' + esc(quandoT) + (D.ultimaData ? ', ultima registrazione del ' + esc(fmtData(D.ultimaData)) : '') + '.' +
+      (giorni >= 1 ? ' <span class="pill warn">di ' + (giorni === 1 ? 'ieri' : giorni + ' giorni fa') + '</span>' : '') + '</p></div>';
+    if (D.es !== S.es) h += '<div class="msg warn">Il cruscotto è dell’esercizio ' + esc(D.es) + '; in alto è scelto il ' + esc(S.es) + '.</div>';
+    h += '<div class="cr-cards">' +
+      card('Risultato d’esercizio', D.risultato, (D.risultato >= 0 ? 'avanzo' : 'disavanzo') + ': ricavi € ' + eur(D.ricavi) + ' − costi € ' + eur(D.costi)) +
+      card('Risultato kung fu', D.risultatoKungFu, 'risultato − fondo basket − fondo Acqui Terme') +
+      card('Fondo disponibile basket', D.basket.fondo, 'saldo € ' + eur(D.basket.saldo) + ' − trattenuta ' + esc(String(D.basket.perc).replace('.', ',')) + '% € ' + eur(D.basket.trattenuta)) +
+      card('Fondo Scuola Acqui Terme', D.acqui.fondo, 'saldo € ' + eur(D.acqui.saldo) + ' − trattenuta ' + esc(String(D.acqui.perc).replace('.', ',')) + '% € ' + eur(D.acqui.trattenuta)) +
+      '</div>';
+    const riga = (l, v, cls) => '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + l + '</td><td class="num">' + v + '</td></tr>';
+    const Ca = D.cassa, B = D.banca;
+    h += '<div class="panel pad stack"><h2 class="sez">Cash flow</h2><div class="cr-cf">' +
+      '<div><h3>Cassa <small>contanti</small></h3><table class="cr-t">' + riga('Saldo iniziale', eur(Ca.iniziale)) + riga('Entrate', '+ ' + eur(Ca.entrate)) + riga('Uscite', '− ' + eur(Ca.uscite)) +
+      riga('Cassa da contabilità', eur(Ca.saldo), 'tot') + riga('Denaro in mano agli allenatori' + (Ca.nPresso ? ' (' + Ca.nPresso + ')' : ''), Ca.presso ? '− ' + eur(Ca.presso) : '-', 'rosso') + '</table>' +
+      '<div class="cr-big"><span>Cassa disponibile</span><b class="' + segno(Ca.disponibile) + '">€ ' + eur(Ca.disponibile) + '</b></div></div>' +
+      '<div><h3>Banca <small>banca, PayPal, SumUp</small></h3><table class="cr-t">' + riga('Saldo iniziale', eur(B.iniziale)) + riga('Entrate', '+ ' + eur(B.entrate)) + riga('Uscite', '− ' + eur(B.uscite)) + '</table>' +
+      '<div class="cr-big"><span>Banca</span><b class="' + segno(B.saldo) + '">€ ' + eur(B.saldo) + '</b></div></div>' +
+      '</div><div class="cr-tot"><span>Totale disponibile</span><b>€ ' + eur(D.disponibile) + '</b></div></div>';
+    return h + '</div>';
   }
 
   // ------------------------------------------------------------------ vista: altro (impostazioni)
@@ -1081,7 +1124,6 @@
     window.addEventListener('online', () => sincronizza());
     window.addEventListener('offline', () => { S.sync.stato = 'offline'; renderSync(); });
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sincronizza(); });
-    setInterval(() => { if (document.visibilityState === 'visible') sincronizza(); }, 300000);
     render();
     sincronizza().then(() => { if (daLink) toast(S.sync.errore ? S.sync.errore : 'Dispositivo collegato al Foglio Google.', S.sync.errore ? 'err' : ''); });
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});

@@ -1464,6 +1464,8 @@
 
   // un'operazione ha una ricevuta emessa se una sua riga ha il numero di ricevuta o se c'è il documento
   const haRicevuta = (op) => (op.righe || []).some((r) => isNum(r.ric)) || !!(op.ricevute && op.ricevute.length);
+  // le quote dei soci avranno una ricevuta; spese, altri incassi e giroconti no
+  const serveRicevuta = (op) => (op.righe || []).some((r) => { const d = clean(r.desc); return RX_ASSOC.test(d) || RX_PART.test(d) || RX_PART_NOMESE.test(d); });
   // ultima operazione (in ordine di Libro Giornale) con una ricevuta emessa
   function ultimaRicevuta(sortedOps) {
     let op = null;
@@ -1473,16 +1475,209 @@
     const sn = (op.ricevute || []).map((y) => y.numero).filter(Boolean);
     return { op, ric: r.length ? Math.max(...r) : null, numero: sn.length ? sn[sn.length - 1] : null };
   }
-  // ord delle nuove operazioni (in ordine di data): dopo l'ultima registrazione con data uguale o precedente,
-  // ma mai prima di un'operazione con una ricevuta già emessa (i numeri di ricevuta seguono il Libro Giornale);
-  // oppure in fondo al Libro Giornale. opz.senzaRicevute: solo la data (per spiegare lo spostamento)
+  // ---------------------------------------------------------------- ordine cronologico del Libro Giornale
+  // Rimette in ordine di data le operazioni che si possono spostare:
+  //  - spese, altri incassi, giroconti (non avranno mai una ricevuta): sempre alla loro data;
+  //  - quote senza ricevuta dopo l'ultima ricevuta emessa: in ordine di data tra loro;
+  //  - operazioni con ricevuta e quote che le precedono: restano dove sono (i numeri di ricevuta seguono il Libro Giornale).
+  // A parità di data resta l'ordine attuale. Restituisce i nuovi ord solo delle operazioni da cambiare.
+  function ordineCronologico(sortedOps) {
+    const ap = sortedOps.filter((o) => o.tipo === 'apertura');
+    const ops = sortedOps.filter((o) => o.tipo !== 'apertura');
+    const pos = new Map(ops.map((o, i) => [o.id, i]));
+    let kRic = -1;
+    ops.forEach((o, i) => { if (haRicevuta(o)) kRic = i; });
+    const fissi = [], liberi = [];
+    ops.forEach((o, i) => {
+      const cr = haRicevuta(o);
+      if (!o.data || cr || (i <= kRic && serveRicevuta(o))) fissi.push(o);
+      else liberi.push({ o, coda: serveRicevuta(o) });
+    });
+    const prima = (a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : pos.get(a.id) - pos.get(b.id));
+    liberi.sort((x, y) => prima(x.o, y.o));
+    // inserisce le operazioni mobili (già in ordine di data) tra quelle ferme, ciascuna alla sua data
+    const unisci = (ferme, mobili) => {
+      const out = [];
+      let si = 0;
+      mobili.forEach((o) => {
+        while (si < ferme.length && (!ferme[si].data || prima(ferme[si], o) < 0)) out.push(ferme[si++]);
+        out.push(o);
+      });
+      while (si < ferme.length) out.push(ferme[si++]);
+      return out;
+    };
+    // 1) spese, altri incassi e giroconti alla loro data, anche prima delle ricevute
+    const alData = unisci(fissi, liberi.filter((x) => !x.coda).map((x) => x.o));
+    // 2) quote senza ricevuta: dopo l'ultima operazione con ricevuta, in ordine di data con quello che segue
+    const k = kRic >= 0 ? alData.indexOf(ops[kRic]) : -1;
+    const nuovo = alData.slice(0, k + 1).concat(unisci(alData.slice(k + 1), liberi.filter((x) => x.coda).map((x) => x.o)));
+    // nuovi ord: chi è già in ordine (sottosequenza crescente più lunga) tiene il suo, gli altri vanno in mezzo
+    const ords = nuovo.map((o) => num(o.ord));
+    const tails = [], prev = new Array(ords.length).fill(-1), idx = [];
+    ords.forEach((v, i) => {
+      let lo = 0, hi = tails.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (ords[tails[m]] < v) lo = m + 1; else hi = m; }
+      if (lo > 0) prev[i] = tails[lo - 1];
+      tails[lo] = i;
+    });
+    const tiene = new Set();
+    for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) tiene.add(i);
+    const base = ap.length ? num(ap[ap.length - 1].ord) : 0;
+    const out = new Array(nuovo.length);
+    let i = 0, spostate = 0;
+    while (i < nuovo.length) {
+      if (tiene.has(i)) { out[i] = ords[i]; i++; continue; }
+      let j = i;
+      while (j < nuovo.length && !tiene.has(j)) j++;
+      const lo = i > 0 ? out[i - 1] : Math.min(base, (j < nuovo.length ? ords[j] : base + 1) - 1);
+      const hi = j < nuovo.length ? ords[j] : lo + (j - i) + 1;
+      for (let t = i; t < j; t++) out[t] = lo + (hi - lo) * (t - i + 1) / (j - i + 1);
+      spostate += j - i;
+      i = j;
+    }
+    // distanze troppo piccole tra gli ord: si rinumera tutto con numeri interi
+    let stretto = ap.length > 0 && out.length > 0 && !(out[0] > base);
+    for (let t = 1; t < out.length && !stretto; t++) if (!(out[t] - out[t - 1] > 1e-6)) { stretto = true; break; }
+    if (stretto) for (let t = 0; t < out.length; t++) out[t] = base + t + 1;
+    const cambi = [];
+    nuovo.forEach((o, t) => { if (Math.abs(num(o.ord) - out[t]) > 1e-12) cambi.push({ op: o, ord: out[t] }); });
+    return { cambi, spostate, ordine: nuovo };
+  }
+
+  // ---------------------------------------------------------------- modifiche nell'app su pagamenti già registrati
+  // Impronta dei pagamenti dell'app da cui nasce una scrittura (dati originali dell'app, non le correzioni
+  // fatte nel Bilancio prima di registrare): se cambia, nell'app qualcosa è stato modificato.
+  function firmaPagamenti(items, lettura) {
+    const raw = new Map(((lettura && lettura.pagamenti) || []).map((p) => [p.id, p]));
+    return (items || []).map((it) => {
+      const p = raw.get(it.id) || it;
+      return { id: String(p.id), d: p.data || null, m: mezzoScrittura(p.mezzo), i: isNum(p.importo) ? r2(p.importo) : null, v: p.voce, me: p.mese || null, f: p.foglio || null, ve: p.versamento || null, n: clean(p.nomeReg || '') };
+    }).sort((a, b) => a.id.localeCompare(b.id));
+  }
+  const firmaUguale = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
+  // cosa è cambiato, in parole
+  function differenzeFirma(prima, ora) {
+    const P = new Map((prima || []).map((x) => [x.id, x])), N = new Map((ora || []).map((x) => [x.id, x]));
+    const voce = (x) => (x.v === 'assoc' ? 'iscrizione' : (x.f ? x.f + ' ' : '') + (x.me ? meseNome(x.me) : ''));
+    const nome = (x) => x.n || '';
+    const out = [];
+    P.forEach((x, id) => {
+      const y = N.get(id);
+      if (!y) { out.push(nome(x) + ', ' + voce(x) + ': non più in questa scrittura (eliminato o cambiato nell’app)'); return; }
+      const c = [];
+      if (x.i !== y.i) c.push('importo ' + (isNum(x.i) ? fmt(x.i) : 'quota') + ' → ' + (isNum(y.i) ? fmt(y.i) : 'quota'));
+      if (x.d !== y.d) c.push('data ' + fmtData(x.d) + ' → ' + fmtData(y.d));
+      if (x.m !== y.m) c.push('mezzo ' + x.m + ' → ' + y.m);
+      if (x.me !== y.me || x.f !== y.f || x.v !== y.v) c.push(voce(x) + ' → ' + voce(y));
+      if (x.ve !== y.ve) c.push('incasso unito o separato');
+      if (x.n !== y.n) c.push('nome ' + x.n + ' → ' + y.n);
+      if (c.length) out.push(nome(y) + ', ' + voce(y) + ': ' + c.join('; '));
+    });
+    N.forEach((y, id) => { if (!P.has(id)) out.push(nome(y) + ', ' + voce(y) + ': aggiunto allo stesso incasso'); });
+    return out;
+  }
+  // Piano degli aggiornamenti: per ogni scrittura nata dall'app si confronta l'impronta salvata con i pagamenti
+  // di oggi. Si rifanno da sole solo le scritture modificabili: nate dall'app, senza ricevuta, dopo l'ultima
+  // ricevuta emessa e mai corrette a mano nel Bilancio; le altre vanno sistemate a mano.
+  function pianoModificheApp(lettura, s, sortedOps, opz) {
+    const o = opz || {};
+    const A = confrontaRegistro(lettura, s, sortedOps, o);
+    const perOp = new Map();
+    A.presenti.forEach((it) => { const op = it.match && it.match.op; if (!op) return; if (!perOp.has(op.id)) perOp.set(op.id, []); perOp.get(op.id).push(it); });
+    const U = ultimaRicevuta(sortedOps);
+    const motivoBlocco = (op) => (haRicevuta(op) ? 'ha la ricevuta' : op.aMano ? 'corretta a mano nel Bilancio' : (op.mesiForzati && op.mesiForzati.length) ? 'ha mesi segnati a mano' : U && num(op.ord) < num(U.op.ord) ? 'precede l’ultima ricevuta emessa (n. ' + (U.numero || U.ric) + ')' : null);
+    const piano = { baseline: [], aggiorna: [], elimina: [], nuove: [], bloccate: [] };
+    const cambiate = [];
+    sortedOps.forEach((op) => {
+      if (op.fonte !== 'registro' || !op.reg) return;
+      const ora = firmaPagamenti(perOp.get(op.id) || [], lettura);
+      if (!op.firmaApp) { if (ora.length) piano.baseline.push({ op, firma: ora }); return; }
+      if (firmaUguale(op.firmaApp, ora)) return;
+      const x = { op, prima: op.firmaApp, ora, diff: differenzeFirma(op.firmaApp, ora) };
+      const mb = motivoBlocco(op);
+      if (mb) piano.bloccate.push({ ...x, motivo: mb }); else cambiate.push(x);
+    });
+    const regOps = sortedOps.filter((op) => op.fonte === 'registro' && op.reg && op.firmaApp);
+    // nuovi pagamenti aggiunti nell'app a un incasso che ha già la sua scrittura
+    const veNuovi = new Set();
+    A.proposte.forEach((p) => p.voci.forEach((it) => { if (it.versamento) veNuovi.add(it.versamento); }));
+    regOps.forEach((op) => {
+      if (cambiate.some((x) => x.op.id === op.id) || piano.bloccate.some((x) => x.op.id === op.id)) return;
+      if (!op.firmaApp.some((y) => y.ve && veNuovi.has(y.ve))) return;
+      const x = { op, prima: op.firmaApp, ora: op.firmaApp, diff: ['nell’app è stato aggiunto un socio allo stesso incasso'] };
+      const mb = motivoBlocco(op);
+      if (mb) piano.bloccate.push({ ...x, motivo: mb + ': il nuovo pagamento viene registrato a parte' }); else cambiate.push(x);
+    });
+    // un pagamento spostato in un incasso (pagamento unico) che ha già una scrittura: anche quella va rifatta
+    if (cambiate.length) {
+      let cresce = true;
+      while (cresce) {
+        cresce = false;
+        const ve = new Set();
+        cambiate.forEach((x) => x.ora.concat(x.prima).forEach((y) => { if (y.ve) ve.add(y.ve); }));
+        regOps.forEach((op) => {
+          if (cambiate.some((x) => x.op.id === op.id) || piano.bloccate.some((x) => x.op.id === op.id)) return;
+          if (!op.firmaApp.some((y) => y.ve && ve.has(y.ve))) return;
+          const mb = motivoBlocco(op);
+          const x = { op, prima: op.firmaApp, ora: op.firmaApp, diff: ['altri pagamenti uniti allo stesso incasso nell’app'] };
+          if (mb) {
+            // l'incasso ha già una scrittura che non si può rifare: anche le scritture collegate restano da sistemare a mano
+            piano.bloccate.push({ ...x, motivo: mb });
+            for (let i = cambiate.length - 1; i >= 0; i--) {
+              if (cambiate[i].ora.some((y) => y.ve && op.firmaApp.some((z) => z.ve === y.ve))) piano.bloccate.push({ ...cambiate.splice(i, 1)[0], motivo: 'unita a un incasso la cui scrittura ' + mb });
+            }
+          } else { cambiate.push(x); cresce = true; }
+        });
+      }
+    }
+    if (!cambiate.length) return piano;
+    // le scritture cambiate si tolgono e i loro pagamenti tornano proposte da registrare
+    const via = new Set(cambiate.map((x) => x.op.id));
+    const A2 = confrontaRegistro(lettura, s, sortedOps.filter((op) => !via.has(op.id)), o);
+    const idLettura = new Set(lettura.pagamenti.map((p) => p.id));
+    const propDi = new Map();
+    A2.proposte.forEach((p) => { p.firma = firmaPagamenti(p.voci, lettura); p.voci.forEach((it) => propDi.set(it.id, p)); });
+    const altrove = new Set(A2.presenti.map((it) => it.id));
+    cambiate.forEach((x) => {
+      x.props = new Set(); x.problemi = false;
+      new Set(x.prima.map((y) => y.id).concat(x.ora.map((y) => y.id))).forEach((id) => {
+        if (propDi.has(id)) x.props.add(propDi.get(id));
+        else if (idLettura.has(id) && !altrove.has(id)) x.problemi = true; // pagamento da controllare
+      });
+    });
+    // gruppi di scritture che condividono proposte (unioni e separazioni di incassi)
+    const fatti = new Set();
+    cambiate.forEach((x) => {
+      if (fatti.has(x)) return;
+      const ops = [x], props = new Set(x.props);
+      fatti.add(x);
+      let cresce = true;
+      while (cresce) {
+        cresce = false;
+        cambiate.forEach((y) => { if (!fatti.has(y) && Array.from(y.props).some((p) => props.has(p))) { fatti.add(y); ops.push(y); y.props.forEach((p) => props.add(p)); cresce = true; } });
+      }
+      const P = Array.from(props);
+      if (ops.some((y) => y.problemi) || P.some((p) => !p.incluso || !p.scrittura.righe.length)) {
+        ops.forEach((y) => piano.bloccate.push({ ...y, motivo: 'pagamenti da controllare nel Registro pagamenti' }));
+        return;
+      }
+      if (ops.length === 1 && P.length === 1) piano.aggiorna.push({ ...x, prop: P[0] });
+      else { ops.forEach((y) => piano.elimina.push(y)); P.forEach((p) => piano.nuove.push(p)); }
+    });
+    return piano;
+  }
+
+  // ord delle nuove operazioni (in ordine di data): dopo l'ultima registrazione con data uguale o precedente;
+  // le quote dei soci (che avranno una ricevuta) mai prima di un'operazione con una ricevuta già emessa,
+  // perché i numeri di ricevuta seguono il Libro Giornale. Oppure in fondo al Libro Giornale.
+  // opz.senzaRicevute: solo la data (per spiegare lo spostamento); opz.serveRicevuta === false: spese e simili
   function ordiniInserimento(sortedOps, date, cronologico, opz) {
     const maxOrd = sortedOps.reduce((m, x) => Math.max(m, num(x.ord)), 0);
     if (!cronologico) return date.map((d, i) => maxOrd + 1 + i);
     const ap = sortedOps.find((x) => x.tipo === 'apertura');
     const ops = sortedOps.filter((x) => x.tipo !== 'apertura');
     let kRic = -1;
-    if (!(opz && opz.senzaRicevute)) ops.forEach((x, i) => { if (haRicevuta(x)) kRic = i; });
+    if (!(opz && (opz.senzaRicevute || opz.serveRicevuta === false))) ops.forEach((x, i) => { if (haRicevuta(x)) kRic = i; });
     const pos = date.map((d) => { let k = -1; ops.forEach((x, i) => { if (x.data && x.data <= d) k = i; }); return Math.max(k, kRic); });
     const out = [];
     let i = 0;
@@ -2407,114 +2602,138 @@
     return wb;
   }
 
-  // ---------------------------------------------------------------- cassa basket
-  // Movimenti di cassa e banca a carico del basket, ricavati dal Registro Cassa:
+  // ---------------------------------------------------------------- casse dei settori: basket e Scuola di Acqui Terme
+  // Movimenti di cassa e banca a carico di un settore, ricavati dal Registro Cassa.
+  // Basket:
   //  - quote associative: 100% per chi frequenta solo il basket, 50% per chi frequenta anche altri corsi (kung fu…);
-  //  - quote mensili: quelle dei corsi di basket secondo l'app Registro pagamenti (opz.mesi: id operazione → importo);
-  //    senza i dati dell'app, in proporzione alle quote dei corsi del socio;
-  //  - per le operazioni con commissioni (SumUp) la parte del basket è proporzionale all'incasso netto;
-  //  - op.basket = { importo } fissa a mano la parte del basket (spese, altri incassi, correzioni); { escludi: true } la toglie.
+  //  - quote mensili: quelle dei corsi di basket secondo l'app Registro pagamenti (opz.mesi: id operazione → socio → importi);
+  //    senza i dati dell'app, in proporzione alle quote dei corsi del socio.
+  // Scuola di Acqui Terme:
+  //  - quote (associative e mensili): quelle pagate nell'app per il corso di Acqui Terme; senza i dati dell'app,
+  //    dai corsi del socio come per il basket.
+  // Per tutti e due:
+  //  - per le operazioni con commissioni (SumUp) la parte del settore è proporzionale all'incasso netto;
+  //  - op[settore] = { importo } fissa a mano la parte del settore (spese, altri incassi, correzioni); { escludi: true } la toglie.
   const isBasket = (corso) => /^basket/i.test(clean(corso || ''));
+  const isAcqui = (corso) => /acqui/i.test(clean(corso || ''));
+  const SETTORI = {
+    basket: { k: 'basket', is: isBasket, nome: 'basket', corsi: 'corsi di basket', titolo: 'REGISTRO CASSA BASKET', daApp: false },
+    acqui: { k: 'acqui', is: isAcqui, nome: 'Scuola di Acqui Terme', corsi: 'corso di Acqui Terme', titolo: 'REGISTRO CASSA SCUOLA DI ACQUI TERME', daApp: true }
+  };
   function quotaCorsoSalvata(s, corso) {
     const q = ((s.registro && s.registro.quote) || []).find((x) => x.f === corso);
     return q && isNum(q.q) ? Number(q.q) : 25;
   }
-  function parteBasketOp(op, s, cr, opz) {
+  function parteSettoreOp(op, s, cr, opz, k) {
+    const T = SETTORI[k] || SETTORI.basket;
     const o = opz || {};
+    const flag = op[T.k];
     const entrata = r2(cr.ce + cr.be), uscita = r2(cr.cu + cr.bu);
     const colonna = (cr.ce || cr.cu) ? 'cassa' : 'diverse';
-    if (op.basket && op.basket.escludi) return null;
-    if (op.basket && isNum(op.basket.importo)) {
-      const v = r2(Math.abs(Number(op.basket.importo)));
+    if (flag && flag.escludi) return null;
+    if (flag && isNum(flag.importo)) {
+      const v = r2(Math.abs(Number(flag.importo)));
       if (!v) return null;
       return { verso: entrata >= uscita ? 'e' : 'u', colonna, importo: v, fonte: 'manuale', dettagli: ['importo indicato a mano'] };
     }
     if (!(entrata > 0)) return null;
-    const app = (o.mesi && o.mesi[op.id]) || null; // { chiave socio: { mesi: importo dei mesi di basket, corsi: [...] } }
+    const app = (o.mesi && o.mesi[op.id]) || null; // { chiave socio: { mesi: mesi di basket, ac: pagamenti di Acqui, corsi: [...] } }
     const corsiDi = (nome) => {
       const set = new Set(corsiSocio(s, nome));
       const a = app && app[chiaveSocio(nome)];
       if (a) a.corsi.forEach((c) => set.add(c));
       return Array.from(set);
     };
-    let lordoQuote = 0, lordoBasket = 0;
+    let lordoQuote = 0, lordo = 0;
     const dettagli = [];
+    const resto = new Map(); // per socio: importo dei pagamenti del settore nell'app non ancora attribuito
     (op.righe || []).forEach((r) => {
       const d = clean(r.desc);
       const v = r2(num(r.avere) - num(r.dare));
+      let nome = null, assoc = false;
       let m = RX_ASSOC.exec(d);
-      if (m) {
-        lordoQuote += v;
-        const corsi = corsiDi(m[1]);
-        const b = corsi.filter(isBasket);
-        if (b.length) {
-          const quota = b.length === corsi.length ? 1 : 0.5;
-          lordoBasket += v * quota;
-          dettagli.push('quota associativa ' + clean(m[1]) + (quota < 1 ? ' al 50% (frequenta anche ' + corsi.filter((c) => !isBasket(c)).join(', ') + ')' : ''));
-        }
+      if (m) { nome = clean(m[1]); assoc = true; } else { m = RX_PART.exec(d) || RX_PART_NOMESE.exec(d); if (m) nome = clean(m[2]); }
+      if (!nome) return;
+      lordoQuote += v;
+      const ks = chiaveSocio(nome);
+      const a = app && app[ks];
+      // Acqui: quanto pagato nell'app per il corso di Acqui Terme
+      if (T.daApp && a && isNum(a.ac)) {
+        if (!resto.has(ks)) resto.set(ks, r2(Number(a.ac)));
+        const x = r2(Math.max(0, Math.min(v, resto.get(ks))));
+        if (x > 0) { lordo += x; resto.set(ks, r2(resto.get(ks) - x)); dettagli.push((assoc ? 'quota associativa ' : 'quota mensile ') + nome + (x < v - 0.004 ? ': € ' + fmt(x) : '') + ' (' + T.corsi + ' secondo l’app)'); }
         return;
       }
-      m = RX_PART.exec(d) || RX_PART_NOMESE.exec(d);
-      if (!m) return;
-      lordoQuote += v;
-      const nome = clean(m[2]);
       const corsi = corsiDi(nome);
-      const b = corsi.filter(isBasket);
+      const b = corsi.filter(T.is);
       if (!b.length) return;
-      if (b.length === corsi.length) { lordoBasket += v; dettagli.push('quota mensile ' + nome); return; }
+      if (assoc) {
+        const quota = b.length === corsi.length ? 1 : 0.5;
+        lordo += v * quota;
+        dettagli.push('quota associativa ' + nome + (quota < 1 ? ' al 50% (frequenta anche ' + corsi.filter((c) => !T.is(c)).join(', ') + ')' : ''));
+        return;
+      }
+      if (b.length === corsi.length) { lordo += v; dettagli.push('quota mensile ' + nome); return; }
       // anche altri corsi: la parte del basket è quella dei pagamenti dei corsi di basket nell'app
-      const a = app && app[chiaveSocio(nome)];
-      if (a && a.mesi > 0) { const x = Math.min(v, a.mesi); lordoBasket += x; dettagli.push('quota mensile ' + nome + ': € ' + fmt(x) + ' dei corsi di basket secondo l’app'); return; }
+      if (!T.daApp && a && a.mesi > 0) { const x = Math.min(v, a.mesi); lordo += x; dettagli.push('quota mensile ' + nome + ': € ' + fmt(x) + ' dei ' + T.corsi + ' secondo l’app'); return; }
       const tot = corsi.reduce((x, c) => x + quotaCorsoSalvata(s, c), 0);
       const qb = b.reduce((x, c) => x + quotaCorsoSalvata(s, c), 0);
       const parte = tot ? v * qb / tot : v;
-      lordoBasket += parte;
-      dettagli.push('quota mensile ' + nome + ': parte del basket in proporzione alle quote dei corsi');
+      lordo += parte;
+      dettagli.push('quota mensile ' + nome + ': parte ' + (T.k === 'basket' ? 'del basket' : 'della ' + T.nome) + ' in proporzione alle quote dei corsi');
     });
-    if (!(lordoBasket > 0.004) || !(lordoQuote > 0)) return null;
-    const importo = r2(Math.min(entrata, lordoBasket * entrata / lordoQuote));
+    if (!(lordo > 0.004) || !(lordoQuote > 0)) return null;
+    const importo = r2(Math.min(entrata, lordo * entrata / lordoQuote));
     if (Math.abs(entrata - lordoQuote) > 0.004 && importo > 0) dettagli.push('al netto delle commissioni, in proporzione');
     return { verso: 'e', colonna, importo, fonte: 'quote', dettagli };
   }
-  // dai pagamenti dell'app già in contabilità: per ogni operazione e socio, i corsi pagati e l'importo dei mesi di basket
+  const parteBasketOp = (op, s, cr, opz) => parteSettoreOp(op, s, cr, opz, 'basket');
+  // dai pagamenti dell'app già in contabilità: per ogni operazione e socio, i corsi pagati, l'importo dei mesi
+  // di basket (mesi) e l'importo pagato per il corso di Acqui Terme, iscrizione compresa (ac)
   function basketDaRegistro(A, s) {
     const out = {};
+    const qAss = s && s.par && isNum(s.par.quotaAssoc) ? Number(s.par.quotaAssoc) : 25;
     ((A && A.presenti) || []).forEach((it) => {
       const op = it.match && it.match.op;
       if (!op || !it.nome || !it.foglio) return;
       const k = chiaveSocio(it.nome);
-      const x = ((out[op.id] = out[op.id] || {})[k] = (out[op.id] || {})[k] || { mesi: 0, corsi: [] });
+      const x = ((out[op.id] = out[op.id] || {})[k] = (out[op.id] || {})[k] || { mesi: 0, ac: 0, corsi: [] });
       if (!x.corsi.includes(it.foglio)) x.corsi.push(it.foglio);
-      if (it.voce === 'mese' && isBasket(it.foglio)) x.mesi = r2(x.mesi + (isNum(it.importo) ? Number(it.importo) : quotaCorsoSalvata(s, it.foglio)));
+      const imp = isNum(it.importo) ? Number(it.importo) : (it.voce === 'mese' ? quotaCorsoSalvata(s, it.foglio) : qAss);
+      if (it.voce === 'mese' && isBasket(it.foglio)) x.mesi = r2(x.mesi + imp);
+      if (isAcqui(it.foglio)) x.ac = r2(x.ac + imp);
     });
     return out;
   }
-  function cassaBasket(s, K, opz) {
-    const b = s.basket || {};
+  function cassaSettore(s, K, opz, k) {
+    const T = SETTORI[k] || SETTORI.basket;
+    const b = s[T.k] || {};
     const ini = { cassa: r2(num(b.saldoCassa)), diverse: r2(num(b.saldoDiverse)) };
     const perc = isNum(b.trattenuta) ? Number(b.trattenuta) : 20;
     let sc = ini.cassa, sd = ini.diverse, n = 0;
     const tot = { ec: 0, uc: 0, ed: 0, ud: 0 };
     const righe = [];
     K.cassa.rows.forEach((cr) => {
-      const p = parteBasketOp(cr.op, s, cr, opz);
+      const p = parteSettoreOp(cr.op, s, cr, opz, T.k);
       if (!p) return;
       const x = { n: ++n, op: cr.op, nOp: cr.op._n, data: cr.op.data, desc: cr.desc, ec: 0, uc: 0, ed: 0, ud: 0, fonte: p.fonte, dettagli: p.dettagli, daConsegnare: !!cr.op.daConsegnare };
-      const k = (p.verso === 'e' ? 'e' : 'u') + (p.colonna === 'cassa' ? 'c' : 'd');
-      x[k] = p.importo;
+      const kk = (p.verso === 'e' ? 'e' : 'u') + (p.colonna === 'cassa' ? 'c' : 'd');
+      x[kk] = p.importo;
       sc = r2(sc + x.ec - x.uc); sd = r2(sd + x.ed - x.ud);
       x.sc = sc; x.sd = sd;
-      Object.keys(tot).forEach((kk) => { tot[kk] = r2(tot[kk] + x[kk]); });
+      Object.keys(tot).forEach((kk2) => { tot[kk2] = r2(tot[kk2] + x[kk2]); });
       righe.push(x);
     });
     const entrate = r2(tot.ec + tot.ed);
     const saldo = r2(sc + sd);
     const trattenuta = r2(entrate * perc / 100);
     const presso = r2(righe.filter((x) => x.daConsegnare).reduce((t, x) => t + x.ec, 0));
-    return { righe, ini, tot, saldoCassa: sc, saldoDiverse: sd, saldo, entrate, uscite: r2(tot.uc + tot.ud), perc, trattenuta, fondo: r2(saldo - trattenuta), presso, nPresso: righe.filter((x) => x.daConsegnare).length };
+    return { settore: T.k, righe, ini, tot, saldoCassa: sc, saldoDiverse: sd, saldo, entrate, uscite: r2(tot.uc + tot.ud), perc, trattenuta, fondo: r2(saldo - trattenuta), presso, nPresso: righe.filter((x) => x.daConsegnare).length };
   }
+  const cassaBasket = (s, K, opz) => cassaSettore(s, K, opz, 'basket');
   // la cassa basket in Excel, con l'impaginazione del file «Registro cassa TAO BASKET»
   function cassaBasketWorkbook(ExcelJS, s, CB) {
+    const T = SETTORI[CB.settore] || SETTORI.basket;
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Bilancio ASD';
     wb.calcProperties = { fullCalcOnLoad: true };
@@ -2526,7 +2745,7 @@
     const pienoC = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
     const set = (addr, v, o) => { const c = ws.getCell(addr); c.value = v; Object.assign(c, o || {}); return c; };
     ws.mergeCells('A1:I1'); ws.mergeCells('A2:I2'); ws.mergeCells('A4:C4'); ws.mergeCells('E4:F4');
-    set('A1', 'REGISTRO CASSA BASKET', { font: ba({ size: 24 }), alignment: { horizontal: 'center', vertical: 'middle' } });
+    set('A1', T.titolo, { font: ba({ size: T.titolo.length > 24 ? 20 : 24 }), alignment: { horizontal: 'center', vertical: 'middle' } });
     set('A2', 'ESERCIZIO SOCIALE ' + s.es, { font: ba({ size: 20 }), alignment: { horizontal: 'center', vertical: 'middle' } });
     ws.getRow(1).height = 31.2; ws.getRow(2).height = 25.2; ws.getRow(4).height = 25.2; ws.getRow(6).height = 27;
     const n = CB.righe.length, ult = Math.max(7, 7 + n);
@@ -2774,7 +2993,7 @@
     return { L: { fogli: (c && c.fogli) || [], righe: (c && c.righe) || [], pagamenti, saltati: [] }, nomi: (c && c.nomi) || {}, quoteCorsi };
   }
   // dati del cruscotto
-  function cruscotto(s, K, CB, DC) {
+  function cruscotto(s, K, CB, DC, CA) {
     const t = { ce: 0, cu: 0, be: 0, bu: 0 };
     K.cassa.rows.forEach((r) => { t.ce += r.ce; t.cu += r.cu; t.be += r.be; t.bu += r.bu; });
     Object.keys(t).forEach((k) => { t[k] = r2(t[k]); });
@@ -2783,7 +3002,7 @@
     const banca = { iniziale: r2(num(s.saldi && s.saldi.banca)), entrate: t.be, uscite: t.bu, saldo: r2(K.cassa.finale.banca) };
     return {
       risultato: r2(K.re.saldo), ricavi: r2(K.re.totR), costi: r2(K.re.totC),
-      fondoBasket: CB.fondo, risultatoKungFu: r2(K.re.saldo - CB.fondo),
+      fondoBasket: CB.fondo, fondoAcqui: CA ? CA.fondo : 0, risultatoKungFu: r2(K.re.saldo - CB.fondo - (CA ? CA.fondo : 0)),
       cassa, banca, totale: r2(cassa.saldo + banca.saldo), disponibile: r2(cassa.disponibile + banca.saldo)
     };
   }
@@ -2796,7 +3015,7 @@
     const thin = { style: 'thin' };
     const bordo = { left: thin, right: thin, top: thin, bottom: thin };
     const ws = wb.addWorksheet('Cruscotto', { views: [{ showGridLines: false }] });
-    [44, 16, 16, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    [46, 16, 16, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
     const set = (addr, v, x) => { const c = ws.getCell(addr); c.value = v; Object.assign(c, x || {}); return c; };
     ws.mergeCells('A1:D1'); ws.mergeCells('A2:D2');
     set('A1', 'CRUSCOTTO', { font: { name: 'Book Antiqua', size: 22 }, alignment: { horizontal: 'center' } });
@@ -2808,20 +3027,21 @@
       if (x) set('C' + r, x, { font: ar({ italic: true, size: 9, color: { argb: 'FF595959' } }) });
     };
     riga(4, 'RISULTATO D’ESERCIZIO', D.risultato, 'ricavi € ' + fmt(D.ricavi) + ' − costi € ' + fmt(D.costi));
-    riga(5, 'RISULTATO KUNG FU', { formula: 'B4-B6', result: D.risultatoKungFu }, 'risultato d’esercizio − fondo disponibile basket');
+    riga(5, 'RISULTATO KUNG FU', { formula: 'B4-B6-B7', result: D.risultatoKungFu }, 'risultato d’esercizio − fondo basket − fondo Scuola di Acqui Terme');
     riga(6, 'FONDO DISPONIBILE BASKET', D.fondoBasket, 'dalla Cassa basket');
-    set('A8', 'CASH FLOW', { font: ar({ bold: true, size: 12 }) });
-    ['', 'CASSA', 'BANCA', 'TOTALE'].forEach((h, i) => { const c = ws.getRow(9).getCell(i + 1); c.value = h; c.font = ar({ bold: true }); c.alignment = { horizontal: 'center' }; c.border = bordo; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EDE7' } }; });
+    riga(7, 'FONDO DISPONIBILE SCUOLA DI ACQUI TERME', D.fondoAcqui || 0, 'dalla Cassa Scuola di Acqui Terme');
+    set('A9', 'CASH FLOW', { font: ar({ bold: true, size: 12 }) });
+    ['', 'CASSA', 'BANCA', 'TOTALE'].forEach((h, i) => { const c = ws.getRow(10).getCell(i + 1); c.value = h; c.font = ar({ bold: true }); c.alignment = { horizontal: 'center' }; c.border = bordo; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EDE7' } }; });
     const cf = [
       ['Saldo iniziale', D.cassa.iniziale, D.banca.iniziale],
       ['Entrate', D.cassa.entrate, D.banca.entrate],
       ['Uscite', D.cassa.uscite, D.banca.uscite],
-      ['Saldo da contabilità', { formula: 'B10+B11-B12', result: D.cassa.saldo }, { formula: 'C10+C11-C12', result: D.banca.saldo }],
+      ['Saldo da contabilità', { formula: 'B11+B12-B13', result: D.cassa.saldo }, { formula: 'C11+C12-C13', result: D.banca.saldo }],
       ['Denaro presso gli allenatori', D.cassa.presso, null],
-      ['DISPONIBILE', { formula: 'B13-B14', result: D.cassa.disponibile }, { formula: 'C13-C14', result: D.banca.saldo }]
+      ['DISPONIBILE', { formula: 'B14-B15', result: D.cassa.disponibile }, { formula: 'C14-C15', result: D.banca.saldo }]
     ];
     cf.forEach((x, i) => {
-      const r = 10 + i;
+      const r = 11 + i;
       const bold = i === 3 || i === 5;
       set('A' + r, x[0], { font: ar({ bold, color: i === 4 ? { argb: 'FFC00000' } : undefined }), border: bordo });
       set('B' + r, x[1], { font: ar({ bold, color: i === 4 ? { argb: 'FFC00000' } : undefined }), numFmt: ACC, border: bordo });
@@ -2829,11 +3049,11 @@
       set('D' + r, { formula: 'B' + r + '+C' + r, result: r2(num(isNum(x[1]) ? x[1] : x[1] && x[1].result) + num(isNum(x[2]) ? x[2] : x[2] && x[2].result)) }, { font: ar({ bold }), numFmt: ACC, border: bordo });
     });
     if (Q) {
-      set('A17', 'QUOTE DA VERSARE', { font: ar({ bold: true, size: 12 }) });
-      set('A18', Q.soci.length + (Q.soci.length === 1 ? ' socio' : ' soci') + ' (dettaglio nel foglio «Quote da versare»)', { font: ar() });
-      set('B18', Q.totale, { font: ar({ bold: true }), numFmt: ACC });
-      set('A19', 'di cui mesi precedenti', { font: ar() }); set('B19', Q.scadute, { font: ar(), numFmt: ACC });
-      set('A20', 'di cui mese in corso (' + meseNome(Q.ora) + ')', { font: ar() }); set('B20', Q.meseCorrente, { font: ar(), numFmt: ACC });
+      set('A18', 'QUOTE DA VERSARE', { font: ar({ bold: true, size: 12 }) });
+      set('A19', Q.soci.length + (Q.soci.length === 1 ? ' socio' : ' soci') + ' (dettaglio nel foglio «Quote da versare»)', { font: ar() });
+      set('B19', Q.totale, { font: ar({ bold: true }), numFmt: ACC });
+      set('A20', 'di cui mesi precedenti', { font: ar() }); set('B20', Q.scadute, { font: ar(), numFmt: ACC });
+      set('A21', 'di cui mese in corso (' + meseNome(Q.ora) + ')', { font: ar() }); set('B21', Q.meseCorrente, { font: ar(), numFmt: ACC });
       const wq = wb.addWorksheet('Quote da versare', { views: [{ state: 'frozen', ySplit: 1 }] });
       [34, 22, 14, 18, 12].forEach((w, i) => { wq.getColumn(i + 1).width = w; });
       ['Socio', 'Corso', 'Voce', 'Mese', 'Importo'].forEach((h, i) => { const c = wq.getRow(1).getCell(i + 1); c.value = h; c.font = ar({ bold: true }); c.border = bordo; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EDE7' } }; });
@@ -3390,7 +3610,7 @@
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
     numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, cassaBasket, basketDaRegistro, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;
