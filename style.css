@@ -257,3 +257,21 @@ table.cr-t tr.rosso td { color: var(--red); font-size: 13px; }
   .cr-card b { font-size: 21px; }
 }
 @media (max-width: 360px) { .cr-cards { grid-template-columns: minmax(0, 1fr); } }
+
+/* chiamare o scrivere su WhatsApp al socio */
+.contatti { display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.contatti .btn svg { width: 16px; height: 16px; }
+.ic-btn { width: 38px; height: 38px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--rule); background: var(--panel); color: var(--accent); text-decoration: none; }
+.ic-btn:hover { border-color: var(--accent); }
+.ic-btn svg { width: 18px; height: 18px; }
+.voce-riga { display: flex; align-items: center; border-bottom: 1px solid var(--rule-2); }
+.voce-riga:last-child { border-bottom: 0; }
+.voce-riga > .voce { flex: 1; min-width: 0; border-bottom: 0; }
+.voce-riga > .contatti { padding-right: 12px; flex-wrap: nowrap; }
+.socio-sel .contatti { margin-left: auto; flex-wrap: nowrap; }
+@media (max-width: 480px) {
+  .voce-riga > .voce { flex-wrap: wrap; row-gap: 4px; }
+  .voce-riga > .voce .r { flex-basis: 100%; text-align: left; }
+  .voce-riga > .voce .r:empty { display: none; }
+  .ic-btn { width: 36px; height: 36px; }
+}

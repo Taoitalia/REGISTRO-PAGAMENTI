@@ -999,7 +999,9 @@
     });
     fogli.forEach((f) => { f.persone = persone.has(f.nome) ? persone.get(f.nome).size : 0; });
     const ultimoMese = fogli.reduce((m, f) => (f.ultimoMese && (!m || f.ultimoMese > m) ? f.ultimoMese : m), null);
-    return { fogli, pagamenti, saltati: [], avvisi, righe, ultimoMese, origine: 'online' };
+    // telefoni scritti nell'app: servono alle schede delle ricevute che non hanno ancora il numero
+    const telefoni = Array.from(soci.values()).filter((so) => clean(so.telefono || '')).map((so) => ({ nomeReg: clean(so.nominativo), telefono: clean(so.telefono) }));
+    return { fogli, pagamenti, saltati: [], avvisi, righe, ultimoMese, origine: 'online', telefoni };
   }
 
   // ---- nomi: nel registro «NOME COGNOME» per esteso, nel Libro Giornale «Cognome N.»
@@ -1438,17 +1440,38 @@
       if (rg.assoc) y.i = true;
       if (rg.assoc || rg.mesi.length) y.celle.push(rg.foglio);
     });
-    // corsi di ogni socio, per sapere a quale ente va tesserato (FIP per il basket, UISP per gli altri)
+    // corsi di ogni socio, per sapere a quale ente va tesserato (FIP per il basket, UISP per gli altri):
+    //  c = tutti i corsi dell'anno (iscrizioni e pagamenti); i = quelli che frequenta ora, cioè con l'iscrizione
+    //  e con mesi ancora da fare non tutti in grigio (chi ha cambiato corso ha qui solo quello nuovo).
+    //  Il libro soci mostra i corsi attuali; la cassa basket usa tutti quelli dell'anno.
+    const mesiAnno = mesiEsercizio(s);
+    const oraM = oggiISO().slice(0, 7);
+    const fineCorso = new Map((lettura.fogli || []).map((f) => [f.nome, f.ultimoMese || mesiAnno[mesiAnno.length - 1]]));
+    const frequenta = (rg) => {
+      const fine = fineCorso.get(rg.foglio) || mesiAnno[mesiAnno.length - 1];
+      const da = oraM < mesiAnno[0] ? mesiAnno[0] : oraM;
+      if (da > fine) return true; // corso finito: conta l'iscrizione
+      const grigi = new Set(rg.mesi || []);
+      return mesiAnno.some((m) => m >= da && m <= fine && !grigi.has(m));
+    };
     const cs = new Map();
-    (lettura.righe || []).concat(lettura.pagamenti).forEach((rg) => {
+    const aggiungiCorso = (rg, attuale) => {
       if (!rg.nomeReg || !rg.foglio) return;
       const x = personaRiga(rg.nomeReg);
       if (!x || !x.nome || x.stato === 'ambiguo' || x.stato === 'incompleto') return;
       const k = chiaveSocio(x.nome);
-      if (!cs.has(k)) cs.set(k, { n: x.nome, c: new Set() });
+      if (!cs.has(k)) cs.set(k, { n: x.nome, c: new Set(), i: new Set() });
       cs.get(k).c.add(rg.foglio);
-    });
-    const corsiSoci = Array.from(cs.values()).map((y) => ({ n: y.n, c: Array.from(y.c).sort() })).sort((a, b) => a.n.localeCompare(b.n, 'it'));
+      if (attuale) cs.get(k).i.add(rg.foglio);
+    };
+    (lettura.righe || []).forEach((rg) => aggiungiCorso(rg, frequenta(rg)));
+    (lettura.pagamenti || []).forEach((rg) => aggiungiCorso(rg, false));
+    const corsiSoci = Array.from(cs.values()).map((y) => {
+      const o = { n: y.n, c: Array.from(y.c).sort() };
+      const i = Array.from(y.i).sort();
+      if (i.length && i.join('|') !== o.c.join('|')) o.i = i;
+      return o;
+    }).sort((a, b) => a.n.localeCompare(b.n, 'it'));
     const nonIncassare = Array.from(ni.values()).map((y) => ({ n: y.n, m: Array.from(y.m || []).sort(), i: y.i, f: y.f, nomeReg: Array.from(y.nomeReg), fogli: Array.from(new Set(y.celle)) }))
       .filter((y) => y.m.length || y.i).sort((a, b) => a.n.localeCompare(b.n, 'it'));
     // nome in contabilità di ogni persona del registro (serve alle quote da versare)
@@ -1911,11 +1934,14 @@
     return ENTI.filter((x) => set.has(x));
   }
   const csCache = new WeakMap();
-  function corsiSocio(s, nome) {
+  // attuali = solo i corsi che il socio frequenta ora (se il registro li distingue)
+  function corsiSocio(s, nome, attuali) {
     const src = s && s.registro && s.registro.corsiSoci;
     if (!src || !Array.isArray(src.soci) || !nome) return [];
-    if (!csCache.has(src)) csCache.set(src, new Map(src.soci.filter((y) => y && y.n).map((y) => [chiaveSocio(y.n), y.c || []])));
-    return csCache.get(src).get(chiaveSocio(nome)) || [];
+    if (!csCache.has(src)) csCache.set(src, new Map(src.soci.filter((y) => y && y.n).map((y) => [chiaveSocio(y.n), y])));
+    const y = csCache.get(src).get(chiaveSocio(nome));
+    if (!y) return [];
+    return (attuali && Array.isArray(y.i) && y.i.length ? y.i : y.c) || [];
   }
   const CF_MESI = 'ABCDEHLMPRST';
   const CF_OMO = 'LMNPQRSTUV';
@@ -2070,7 +2096,7 @@
       const genitore = e.genitore && e.genitore.cognome ? e.genitore : (a && a.minore && a.pagatore && normNome(a.pagatore) !== kn ? { nominativo: a.pagatore, cf: a.cf } : null);
       const st = (e.stagioni && e.stagioni[s.es]) || {};
       // corsi: dal registro pagamenti e, per il basket, dalla lettera del libro; da lì gli enti
-      const daRegistro = corsiSocio(s, contabilita);
+      const daRegistro = corsiSocio(s, contabilita, true);
       const corsi = daRegistro.length ? daRegistro.slice() : (e.basket ? [e.basket] : []);
       let enti = entiDaCorsi(corsi);
       if (!enti.length) enti = ['UISP'];

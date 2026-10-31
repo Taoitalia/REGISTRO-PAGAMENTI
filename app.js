@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = 'c096fe83';
+  const VERSIONE_APP = '473f0872';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -128,6 +128,19 @@
   const impBreve = (v) => (Math.abs(v - Math.round(v)) < 0.005 ? String(Math.round(v)) : eur(v));
   const quotaIsc = (isc) => { const c = corso(isc.corso); return isc.quota != null && isc.quota !== '' ? Number(isc.quota) : Number(c && c.quota) || 0; };
   const inCoda = (t, id) => S.coda.some((x) => x.t === t && x.r.id === id);
+  // telefono del socio: numero con il prefisso (italiano se manca) per scrivere su WhatsApp
+  function numeroTel(t) {
+    const C = window.Core;
+    const n = C && C.normalizzaTelefono ? C.normalizzaTelefono(t, '39') : String(t || '').replace(/\D/g, '');
+    return n && n.length >= 9 ? n : '';
+  }
+  const ICONA_MSG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.1-5.4A8.4 8.4 0 1 1 21 11.5z"/></svg>';
+  // pulsante per scrivere su WhatsApp: a icona (elenco soci, incasso) o con la scritta (scheda del socio)
+  function contattiHtml(tel, conTesto) {
+    const n = numeroTel(tel);
+    if (!n) return '';
+    return '<span class="contatti"><a class="' + (conTesto ? 'btn sm' : 'ic-btn') + '" href="https://wa.me/' + n + '" target="_blank" rel="noopener" aria-label="Scrivi su WhatsApp a ' + esc(tel) + '" title="WhatsApp ' + esc(tel) + '">' + ICONA_MSG + (conTesto ? 'WhatsApp' : '') + '</a></span>';
+  }
   // importo di un pagamento: quello scritto, oppure (pagamenti importati dall'Excel senza importo) la quota
   function importoPag(p) {
     if (p.importo != null && p.importo !== '') return Number(p.importo);
@@ -325,7 +338,7 @@
     }
     const so = socio(F.socio);
     const st = situazione(F.socio);
-    h += '<div class="socio-sel"><div><b>' + esc(so.nominativo) + '</b><div class="small muted">' + esc(st.isc.map((i) => titoloCorso(corso(i.corso))).join(' · ') || 'Nessun corso nel ' + S.es) + '</div></div><button class="btn sm" data-act="cambia-socio">Cambia</button></div>';
+    h += '<div class="socio-sel"><div><b>' + esc(so.nominativo) + '</b><div class="small muted">' + esc(st.isc.map((i) => titoloCorso(corso(i.corso))).join(' · ') || 'Nessun corso nel ' + S.es) + '</div></div>' + contattiHtml(so.telefono) + '<button class="btn sm" data-act="cambia-socio">Cambia</button></div>';
     if (!st.isc.length) {
       h += '<div class="panel pad stack"><div class="msg warn">' + esc(so.nominativo) + ' non è iscritto a nessun corso nel ' + esc(S.es) + '.</div><div><button class="btn primary" data-act="iscrivi" data-socio="' + esc(so.id) + '">Iscrivi a un corso</button></div></div>';
       return h + '</div>';
@@ -490,7 +503,8 @@
       '<div style="flex:0 0 auto"><button class="btn primary" data-act="nuovo-socio">+ Nuovo socio</button></div></div>';
     h += '<div class="panel"><div class="lista">' + (lst.length ? lst.slice(0, 300).map((so) => {
       const isc = iscrizioniSocio(so.id);
-      return '<button class="voce" data-socio-ed="' + esc(so.id) + '"><span class="t"><b>' + esc(so.nominativo) + (so.attivo === false ? ' <span class="pill">non attivo</span>' : '') + '</b><small>' + esc(isc.map((i) => nomeCorso(corso(i.corso))).join(', ') || 'nessun corso nel ' + S.es) + (so.telefono ? ' · ' + esc(so.telefono) : '') + '</small></span><span class="r">' + statoCert(so) + '</span></button>';
+      const ct = contattiHtml(so.telefono);
+      return (ct ? '<div class="voce-riga">' : '') + '<button class="voce" data-socio-ed="' + esc(so.id) + '"><span class="t"><b>' + esc(so.nominativo) + (so.attivo === false ? ' <span class="pill">non attivo</span>' : '') + '</b><small>' + esc(isc.map((i) => nomeCorso(corso(i.corso))).join(', ') || 'nessun corso nel ' + S.es) + (so.telefono ? ' · ' + esc(so.telefono) : '') + '</small></span><span class="r">' + statoCert(so) + '</span></button>' + (ct ? ct + '</div>' : '');
     }).join('') : '<div class="empty">Nessun socio.</div>') + '</div></div>';
     return h + '<p class="small muted">' + lst.length + ' soci</p></div>';
   }
@@ -645,6 +659,7 @@
     }
     h += '<div class="row"><label class="field"><span>Telefono</span><input class="in" data-v="telefono" type="tel" value="' + esc(v.telefono) + '"></label><label class="field"><span>Scadenza certificato medico</span><input class="in" type="date" data-v="scadenzaCert" value="' + esc(v.scadenzaCert) + '"></label></div>' +
       '<label class="small" style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-v="certificato"' + (v.certificato ? ' checked' : '') + '> Certificato medico consegnato</label>';
+    if (so && numeroTel(so.telefono)) h += contattiHtml(so.telefono, true);
     // corsi dell'anno
     const isc = so ? iscrizioniSocio(so.id) : [];
     const giaIsc = new Set(isc.map((i) => i.corso));
