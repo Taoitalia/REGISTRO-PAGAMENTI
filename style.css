@@ -275,3 +275,23 @@ table.cr-t tr.rosso td { color: var(--red); font-size: 13px; }
   .voce-riga > .voce .r:empty { display: none; }
   .ic-btn { width: 36px; height: 36px; }
 }
+
+/* quote da pagare su WhatsApp: promemoria del lunedì, impostazioni, anteprima delle tabelle */
+.inv-banner { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; border: 2px solid var(--accent); margin-bottom: 14px; }
+.inv-banner .row { flex: 0 1 auto; align-items: center; }
+.inv-banner .row > * { flex: 0 0 auto; }
+.inv-banner .btn svg, .inv-card .btn svg { width: 18px; height: 18px; }
+.inv-card { border: 1px solid var(--rule); border-radius: 8px; padding: 12px; }
+.inv-corsi { display: flex; gap: 6px; flex-wrap: wrap; }
+.inv-chip { border: 1px solid var(--rule); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.inv-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.inv-card .row > .btn, .inv-card .row > span { flex: 0 0 auto; }
+.inv-img { margin: 0; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: #fff; }
+.inv-img img { display: block; width: 100%; height: auto; }
+.inv-img figcaption { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 8px 10px; font-size: 14px; background: var(--panel); border-top: 1px solid var(--rule); }
+.inv-az { display: inline-flex; gap: 6px; }
+
+.inv-numeri { display: flex; gap: 10px 18px; flex-wrap: wrap; align-items: center; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; background: var(--accent-soft); }
+.inv-numeri > div { display: flex; flex-direction: column; gap: 2px; flex: 1 1 150px; }
+.inv-numeri > div b { font-size: 16px; }
+.inv-numeri > .btn { flex: 0 0 auto; }

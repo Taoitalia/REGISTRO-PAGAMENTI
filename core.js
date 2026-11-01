@@ -973,8 +973,11 @@
     const righe = iscr.map((i, k) => {
       // «2026-10» oppure «2026-10=20»: l'importo scritto nell'app nella casella grigia non arriva in contabilità
       const nd = String(i.nonDovuti || '').split(',').map((x) => x.trim().split('=')[0]).filter(Boolean);
+      // importi delle caselle grigie: non vanno in contabilità, servono solo al prospetto dei ricavi netti
+      const importiNd = {};
+      String(i.nonDovuti || '').split(',').forEach((x) => { const t = x.trim(); const j = t.indexOf('='); if (j > 0 && isNum(t.slice(j + 1))) importiNd[t.slice(0, j)] = r2(Number(t.slice(j + 1))); });
       const so = soci.get(i.socio);
-      return { foglio: String(corsi.get(i.corso).nome), riga: k + 1, nomeReg: clean(so.nominativo), assoc: nd.includes('I'), mesi: nd.filter((x) => /^\d{4}-\d{2}$/.test(x)), cert: so.certificato === true || so.certificato === 'true' ? 'X' : '', scad: so.scadenzaCert || null, quota: i.quota !== null && i.quota !== '' && isNum(i.quota) ? Number(i.quota) : null };
+      return { importiNd: Object.keys(importiNd).length ? importiNd : undefined, foglio: String(corsi.get(i.corso).nome), riga: k + 1, nomeReg: clean(so.nominativo), assoc: nd.includes('I'), mesi: nd.filter((x) => /^\d{4}-\d{2}$/.test(x)), cert: so.certificato === true || so.certificato === 'true' ? 'X' : '', scad: so.scadenzaCert || null, quota: i.quota !== null && i.quota !== '' && isNum(i.quota) ? Number(i.quota) : null };
     });
     const persone = new Map();
     const pagamenti = [];
@@ -2959,7 +2962,7 @@
       const x = pers(p.nomeReg);
       if (p.voce === 'assoc') x.assocPagata = true; else if (p.mese) x.pagati.add(p.foglio + '|' + p.mese);
     });
-    const out = [];
+    const out = [], contabili = [];
     persone.forEach((x) => {
       if (!x.isc.length) return;
       const so = x.nome ? soci.get(chiaveSocio(x.nome)) : null;
@@ -2967,7 +2970,7 @@
       const corsiSocio = Array.from(new Set(x.isc.map((r) => r.foglio)));
       const voci = [];
       if (!x.assocPagata && !x.isc.some((r) => r.assoc) && !(so && so.assoc.length)) voci.push({ voce: 'assoc', foglio: null, mese: null, importo: qAss });
-      mesi.filter((ym) => ym <= ora).forEach((ym) => {
+      mesi.forEach((ym) => {
         const corsi = x.isc.filter((r) => ym <= fineCorso(r.foglio) && !(r.mesi || []).includes(ym));
         if (!corsi.length) return;
         const pagatiReg = corsi.filter((r) => x.pagati.has(r.foglio + '|' + ym));
@@ -2975,11 +2978,16 @@
         if (!aperti.length) return;
         const vg = so ? so.mesi.get(ym) : null;
         if (vg && vg.length) {
-          if (corsiSocio.length === 1 || vg.some((v) => !isNum(v.perMese))) return;
+          // quota registrata solo in contabilità: per il prospetto dei ricavi netti conta come incassata
+          if (corsiSocio.length === 1 || vg.some((v) => !isNum(v.perMese))) {
+            if (aperti.length === 1) { const tot = vg.every((v) => isNum(v.perMese)) ? r2(vg.reduce((t, v) => t + v.perMese, 0)) : quota(aperti[0]); contabili.push({ foglio: aperti[0].foglio, mese: ym, importo: tot }); }
+            else aperti.forEach((r) => contabili.push({ foglio: r.foglio, mese: ym, importo: quota(r) }));
+            return;
+          }
           let copre = r2(vg.reduce((t, v) => t + v.perMese, 0) - pagatiReg.reduce((t, r) => t + quota(r), 0));
-          aperti = aperti.filter((r) => { if (copre >= quota(r) - 0.004) { copre = r2(copre - quota(r)); return false; } return true; });
+          aperti = aperti.filter((r) => { if (copre >= quota(r) - 0.004) { copre = r2(copre - quota(r)); contabili.push({ foglio: r.foglio, mese: ym, importo: quota(r) }); return false; } return true; });
         }
-        aperti.forEach((r) => voci.push({ voce: 'mese', foglio: r.foglio, mese: ym, importo: quota(r), corrente: ym === ora }));
+        if (ym <= ora) aperti.forEach((r) => voci.push({ voce: 'mese', foglio: r.foglio, mese: ym, importo: quota(r), corrente: ym === ora }));
       });
       if (!voci.length) return;
       out.push({ key: x.key, nomeReg: x.nomeReg, nome: x.nome, corsi: corsiSocio, voci, totale: r2(voci.reduce((t, v) => t + v.importo, 0)) });
@@ -2987,7 +2995,7 @@
     out.sort((a, b) => a.nomeReg.localeCompare(b.nomeReg, 'it'));
     const tot = r2(out.reduce((t, x) => t + x.totale, 0));
     const corrente = r2(out.reduce((t, x) => t + x.voci.filter((v) => v.corrente).reduce((u, v) => u + v.importo, 0), 0));
-    return { soci: out, totale: tot, meseCorrente: corrente, scadute: r2(tot - corrente), ora, oggi };
+    return { soci: out, totale: tot, meseCorrente: corrente, scadute: r2(tot - corrente), ora, oggi, contabili };
   }
   // copia ridotta del registro (corsi, iscrizioni, pagamenti), salvata nelle impostazioni: il cruscotto
   // mostra le quote da versare anche quando l'app non è raggiungibile
@@ -3002,6 +3010,7 @@
       if (p.voce === 'assoc') x.a = true; else if (p.mese && !x.m.includes(p.foglio + '|' + p.mese)) x.m.push(p.foglio + '|' + p.mese);
     });
     return {
+      incassi: incassiCorsi(L, null, Object.keys(qc).reduce((o, k) => { if (qc[k] && isNum(qc[k].valore)) o[k] = Number(qc[k].valore); return o; }, {})), // per il prospetto dei ricavi netti, quando l'app non è raggiungibile
       fogli: (L.fogli || []).map((f) => ({ nome: f.nome, ultimoMese: f.ultimoMese || null, quota: qc[f.nome] && isNum(qc[f.nome].valore) ? Number(qc[f.nome].valore) : (isNum(f.quota) ? Number(f.quota) : null) })),
       righe: (L.righe || []).filter((r) => r.nomeReg).map((r) => ({ foglio: r.foglio, nomeReg: clean(r.nomeReg), assoc: !!r.assoc, mesi: (r.mesi || []).slice(), quota: isNum(r.quota) ? Number(r.quota) : null })),
       pagati: Array.from(pag.values()).map((x) => ({ ...x, m: x.m.sort() })),
@@ -3018,6 +3027,189 @@
     ((c && c.fogli) || []).forEach((f) => { if (isNum(f.quota)) quoteCorsi[f.nome] = Number(f.quota); });
     return { L: { fogli: (c && c.fogli) || [], righe: (c && c.righe) || [], pagamenti, saltati: [] }, nomi: (c && c.nomi) || {}, quoteCorsi };
   }
+  // ---------------------------------------------------------------- ricavi netti dei corsi (controllo di gestione)
+  // Per ogni corso di kung fu e tai chi e ogni mese: incassi dei soci (quote mensili pagate, in qualunque modo,
+  // più gli importi scritti nelle caselle grigie), uscite per i docenti e per la palestra, risultato del mese e
+  // progressivo. Basket e Scuola di Acqui Terme hanno la loro cassa: qui entra solo la loro trattenuta.
+  const ETICHETTE_CORSI = { cuccioli: 'CUCCIOLI', 'j+t': 'JUNIOR-TEEN', 'kung fu': 'ADULTI', 'tai chi al': 'TAI CHI AL', 'tai chi spin': 'TAI CHI SPINETTA', 'cast asilo': 'CAST ASILO', 'cast el': 'CAST ELEM', 'spinetta el': 'SPINETTA ELEM', 'spinetta medie': 'SPINETTA MEDIE', sgv: 'SAN GIULIANO' };
+  const etichettaCorso = (nome) => ETICHETTE_CORSI[clean(nome).toLowerCase()] || clean(nome).toUpperCase();
+  // incassi per «corso|mese»: { q: quote pagate, nd: importi delle caselle grigie }
+  // quota di un pagamento senza importo: quella della riga, poi quella del corso, poi quella generale
+  function incassiCorsi(L, s, quoteCorsi) {
+    const out = {};
+    const qc = quoteCorsi || {};
+    const salvate = new Map(((s && s.registro && s.registro.quote) || []).map((q) => [q.f, q.q]));
+    const fogli = new Map(((L && L.fogli) || []).map((f) => [f.nome, f]));
+    const quotaRiga = new Map();
+    ((L && L.righe) || []).forEach((r) => { if (r.nomeReg && isNum(r.quota)) quotaRiga.set(r.foglio + '|' + normNome(r.nomeReg), Number(r.quota)); });
+    const qMese = s && s.par && isNum(s.par.quotaMese) ? Number(s.par.quotaMese) : 25;
+    const add = (k, campo, v) => { if (!(v > 0)) return; const x = (out[k] = out[k] || { q: 0, nd: 0 }); x[campo] = r2(x[campo] + v); };
+    ((L && L.pagamenti) || []).concat((L && L.saltati) || []).forEach((p) => {
+      if (p.voce !== 'mese' || !p.foglio || !p.mese) return;
+      let v = isNum(p.importo) ? Number(p.importo) : null;
+      if (v === null) {
+        const q = quotaRiga.get(p.foglio + '|' + normNome(p.nomeReg || '')); const f = fogli.get(p.foglio);
+        v = isNum(q) ? q : isNum(qc[p.foglio]) ? Number(qc[p.foglio]) : f && isNum(f.quota) ? Number(f.quota) : isNum(salvate.get(p.foglio)) ? Number(salvate.get(p.foglio)) : qMese;
+      }
+      add(p.foglio + '|' + p.mese, 'q', v);
+    });
+    ((L && L.righe) || []).forEach((r) => { Object.keys(r.importiNd || {}).forEach((ym) => { if (/^\d{4}-\d{2}$/.test(ym)) add(r.foglio + '|' + ym, 'nd', Number(r.importiNd[ym]) || 0); }); });
+    return out;
+  }
+  // costo di un corso in un mese: importo scritto, oppure quello del mese prima (confermato o ancora da confermare)
+  function costoCorsoMese(costi, corso, tipo, mesi, i) {
+    const m = ((costi && costi[corso]) || {})[tipo] || {};
+    const v = m[mesi[i]];
+    // numero: importo scritto; { c: numero }: importo del mese prima confermato
+    if (isNum(v)) return { v: r2(Number(v)), stato: i === 0 ? 'iniziale' : 'nuovo' };
+    if (v && typeof v === 'object' && isNum(v.c)) return { v: r2(Number(v.c)), stato: i === 0 ? 'iniziale' : 'confermato' };
+    if (i === 0) return { v: 0, stato: 'vuoto' };
+    const prima = costoCorsoMese(costi, corso, tipo, mesi, i - 1);
+    return { v: prima.v, stato: 'da confermare' };
+  }
+  // opz: { L (lettura del registro) | incassi (dalla copia), fogli, Q (quote da versare), basket, acqui (trattenute) }
+  function ricaviNetti(s, opz) {
+    const o = opz || {};
+    // colonne nell'ordine del file «RICAVI NETTI» caricato, altrimenti in quello del prospetto originale
+    const ordine = s.gestione && Array.isArray(s.gestione.ordine) ? s.gestione.ordine : [];
+    const chiavi = Object.keys(ETICHETTE_CORSI);
+    const pos = (n) => { const i = ordine.indexOf(n); if (i >= 0) return i; const j = chiavi.indexOf(clean(n).toLowerCase()); return j >= 0 ? 1000 + j : 2000; };
+    const fogli = (o.fogli || (o.L && o.L.fogli) || []).filter((f) => f && f.nome && !isBasket(f.nome) && !isAcqui(f.nome))
+      .map((f, k) => ({ f, k })).sort((a, b) => pos(a.f.nome) - pos(b.f.nome) || a.k - b.k).map((x) => x.f);
+    const tutti = mesiEsercizio(s);
+    const fine = fogli.reduce((m, f) => (f.ultimoMese && f.ultimoMese > m ? f.ultimoMese : m), '');
+    const mesi = tutti.filter((ym) => !fine || ym <= fine);
+    const inc = {};
+    const base = o.incassi || incassiCorsi(o.L, s, o.quoteCorsi);
+    Object.keys(base).forEach((k) => { inc[k] = { q: num(base[k].q), nd: num(base[k].nd), lg: 0 }; });
+    ((o.Q && o.Q.contabili) || []).forEach((c) => { const k = c.foglio + '|' + c.mese; const x = (inc[k] = inc[k] || { q: 0, nd: 0, lg: 0 }); x.lg = r2(x.lg + num(c.importo)); });
+    const gialli = new Set();
+    ((o.Q && o.Q.soci) || []).forEach((x) => x.voci.forEach((v) => { if (v.voce === 'mese' && v.foglio && v.mese) gialli.add(v.foglio + '|' + v.mese); }));
+    const costi = (s.gestione && s.gestione.costi) || {};
+    const corsi = fogli.map((f) => ({ nome: f.nome, etichetta: etichettaCorso(f.nome) }));
+    const righe = mesi.map(() => ({}));
+    const prog = {};
+    const totaleMese = [];
+    mesi.forEach((ym, i) => {
+      let tot = 0;
+      corsi.forEach((c) => {
+        const x = inc[c.nome + '|' + ym] || { q: 0, nd: 0, lg: 0 };
+        const d = costoCorsoMese(costi, c.nome, 'd', mesi, i), p = costoCorsoMese(costi, c.nome, 'p', mesi, i);
+        const incassi = r2(x.q + x.nd + x.lg);
+        const risultato = r2(incassi - d.v - p.v);
+        prog[c.nome] = r2((prog[c.nome] || 0) + risultato);
+        righe[i][c.nome] = { incassi, quote: x.q, nd: x.nd, lg: x.lg, docenti: d.v, statoD: d.stato, palestra: p.v, statoP: p.stato, risultato, progressivo: prog[c.nome], giallo: gialli.has(c.nome + '|' + ym) };
+        tot += prog[c.nome];
+      });
+      totaleMese.push(r2(tot));
+    });
+    const basket = r2(num(o.basket)), acqui = r2(num(o.acqui));
+    const finale = totaleMese.length ? totaleMese[totaleMese.length - 1] : 0;
+    return { mesi, corsi, righe, totaleMese, basket, acqui, totaleGenerale: r2(finale + basket + acqui) };
+  }
+  // il prospetto in Excel, con l'impaginazione del file «RICAVI NETTI»
+  function ricaviNettiWorkbook(ExcelJS, s, RN) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    wb.calcProperties = { fullCalcOnLoad: true };
+    const ws = wb.addWorksheet('Ricavi netti ' + String(s.es || '').slice(2, 4) + '-' + String(s.es || '').slice(7, 9), { views: [{ state: 'frozen', xSplit: 1, ySplit: 1 }] });
+    const NF = '_-* #,##0_-;\\-* #,##0_-;_-* "-"??_-;_-@_-';
+    const giallo = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+    const celleRis = []; // risultati del mese: rosso se negativo, verde se positivo, anche dopo una modifica in Excel
+    const col = (k) => { let n = k + 1, t = ''; while (n > 0) { const m = (n - 1) % 26; t = String.fromCharCode(65 + m) + t; n = Math.floor((n - 1) / 26); } return t; };
+    const nC = RN.corsi.length;
+    const cTot = col(1 + 2 * nC); // colonna del totale
+    ws.getColumn(1).width = 15;
+    for (let k = 0; k < nC; k++) { ws.getColumn(2 + 2 * k).width = 9.5; ws.getColumn(3 + 2 * k).width = 9.5; }
+    ws.getColumn(2 + 2 * nC).width = 12;
+    const set = (addr, v, x) => { const c = ws.getCell(addr); c.value = v; Object.assign(c, x || {}); return c; };
+    set('A1', 'MESE');
+    RN.corsi.forEach((c, k) => { const a = col(1 + 2 * k), b = col(2 + 2 * k); ws.mergeCells(a + '1:' + b + '1'); set(a + '1', c.etichetta, { alignment: { horizontal: 'center' } }); });
+    set(cTot + '1', 'TOTALE', { font: { bold: true }, alignment: { horizontal: 'center' } });
+    const MESI_UP = ['GENNAIO', 'FEBBRAIO', 'MARZO', 'APRILE', 'MAGGIO', 'GIUGNO', 'LUGLIO', 'AGOSTO', 'SETTEMBRE', 'OTTOBRE', 'NOVEMBRE', 'DICEMBRE'];
+    RN.mesi.forEach((ym, i) => {
+      const r0 = 2 + 5 * i;
+      set('A' + r0, MESI_UP[Number(ym.slice(5, 7)) - 1] + ' ' + ym.slice(2, 4));
+      set('A' + (r0 + 1), 'Incassi soci'); set('A' + (r0 + 2), 'Uscite docenti'); set('A' + (r0 + 3), 'Uscite palestra');
+      set('A' + (r0 + 4), 'TOTALE', { font: { bold: true }, fill: giallo });
+      const progr = [];
+      RN.corsi.forEach((c, k) => {
+        const a = col(1 + 2 * k), b = col(2 + 2 * k);
+        const x = RN.righe[i][c.nome];
+        set(a + (r0 + 1), x.incassi, { numFmt: NF, fill: x.giallo ? giallo : undefined });
+        set(a + (r0 + 2), x.docenti, { numFmt: NF, font: x.statoD === 'da confermare' ? { italic: true, color: { argb: 'FF7F7F7F' } } : undefined });
+        set(a + (r0 + 3), x.palestra, { numFmt: NF, font: x.statoP === 'da confermare' ? { italic: true, color: { argb: 'FF7F7F7F' } } : undefined });
+        set(a + (r0 + 4), { formula: a + (r0 + 1) + '-' + a + (r0 + 2) + '-' + a + (r0 + 3), result: x.risultato }, { numFmt: NF, font: { bold: true } }); // colore dalla formattazione condizionale
+        celleRis.push(a + (r0 + 4));
+        set(b + (r0 + 4), { formula: i === 0 ? a + (r0 + 4) : b + (r0 - 1) + '+' + a + (r0 + 4), result: x.progressivo }, { numFmt: NF });
+        progr.push(b + (r0 + 4));
+      });
+      ws.mergeCells(cTot + r0 + ':' + cTot + (r0 + 4));
+      set(cTot + r0, { formula: progr.join('+') || '0', result: RN.totaleMese[i] }, { numFmt: NF, alignment: { vertical: 'middle' } });
+    });
+    if (celleRis.length) {
+      const dxf = (argb) => ({ fill: { type: 'pattern', pattern: 'solid', bgColor: { argb } } });
+      ws.addConditionalFormatting({ ref: celleRis.join(' '), rules: [
+        { type: 'cellIs', operator: 'lessThan', formulae: ['0'], style: dxf('FFFF0000'), priority: 1 },
+        { type: 'cellIs', operator: 'greaterThan', formulae: ['0'], style: dxf('FF00B050'), priority: 2 }
+      ] });
+    }
+    let r = 2 + 5 * RN.mesi.length + 1;
+    const ultimo = cTot + (2 + 5 * (RN.mesi.length - 1));
+    const extra = [];
+    // etichette sulle ultime tre coppie di colonne, come nel prospetto originale
+    const riga = (testo, v, argb, grassetto) => {
+      const a = col(Math.max(1, 2 * nC - 5)), b = col(2 * nC);
+      ws.mergeCells(a + r + ':' + b + r);
+      set(a + r, testo, { font: grassetto ? { bold: true } : undefined, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb } }, alignment: { horizontal: 'center' } });
+      set(cTot + r, v, { numFmt: NF });
+      return cTot + r++;
+    };
+    extra.push(riga('BASKET', RN.basket, 'FF00B0F0'));
+    if (RN.acqui) extra.push(riga('SCUOLA ACQUI TERME', RN.acqui, 'FF00B0F0'));
+    r += 2;
+    riga('TOTALE GENERALE', { formula: [ultimo].concat(extra).join('+'), result: RN.totaleGenerale }, 'FF92D050', true);
+    ws.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '1:1', margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } };
+    return wb;
+  }
+  // costi del primo mese dal file «RICAVI NETTI»: per ogni corso (intestazioni della riga 1) uscite docenti e palestra
+  function leggiCostiRicaviNetti(wb, corsiNoti) {
+    const ws = wb.worksheets[0];
+    if (!ws) throw new Error('Il file non contiene fogli.');
+    let rTit = 0;
+    for (let r = 1; r <= Math.min(ws.rowCount, 10) && !rTit; r++) if (/^mese$/i.test(testoCella(ws.getCell(r, 1)))) rTit = r;
+    if (!rTit) throw new Error('Non trovo la riga dei titoli con «MESE» nella prima colonna.');
+    // primo blocco: le righe tra il primo mese e il secondo
+    let rDoc = 0, rPal = 0;
+    for (let r = rTit + 1; r <= Math.min(ws.rowCount, rTit + 12); r++) {
+      const t = testoCella(ws.getCell(r, 1)).toLowerCase();
+      if (!rDoc && /docent/.test(t)) rDoc = r;
+      if (!rPal && /palestr/.test(t)) rPal = r;
+      if (rDoc && rPal) break;
+    }
+    if (!rDoc && !rPal) throw new Error('Nel primo mese non trovo le righe «Uscite docenti» e «Uscite palestra».');
+    const noti = new Map((corsiNoti || []).map((n) => [clean(n).toLowerCase(), n]));
+    Object.keys(ETICHETTE_CORSI).forEach((k) => { const n = (corsiNoti || []).find((x) => clean(x).toLowerCase() === k); if (n) noti.set(ETICHETTE_CORSI[k].toLowerCase(), n); });
+    const val = (c) => {
+      const v = c.value;
+      if (typeof v === 'number') return r2(v);
+      if (v && typeof v === 'object' && 'result' in v && isNum(v.result)) return r2(Number(v.result));
+      const f = v && typeof v === 'object' && v.formula ? String(v.formula) : typeof v === 'string' ? v.replace(/^=/, '') : '';
+      if (/^[\d\s.,+\-]+$/.test(f)) return r2(f.replace(/,/g, '.').split(/(?=[+-])/).reduce((t, x) => t + (Number(x.replace(/\s/g, '')) || 0), 0));
+      return 0;
+    };
+    const out = [], ignoti = [];
+    for (let c = 2; c <= Math.min(ws.columnCount, 80); c++) {
+      const tit = testoCella(ws.getCell(rTit, c));
+      if (!tit || /^totale/i.test(tit)) continue;
+      const corso = noti.get(tit.toLowerCase());
+      if (!corso) { ignoti.push(tit); continue; }
+      if (out.some((x) => x.corso === corso)) continue;
+      out.push({ corso, etichetta: tit, d: rDoc ? val(ws.getCell(rDoc, c)) : 0, p: rPal ? val(ws.getCell(rPal, c)) : 0 });
+    }
+    return { mese: testoCella(ws.getCell(rTit + 1, 1)), corsi: out, ignoti };
+  }
+
   // dati del cruscotto
   function cruscotto(s, K, CB, DC, CA) {
     const t = { ce: 0, cu: 0, be: 0, bu: 0 };
@@ -3636,7 +3828,7 @@
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
     numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, ricaviNetti, ricaviNettiWorkbook, leggiCostiRicaviNetti, incassiCorsi, costoCorsoMese, etichettaCorso, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;

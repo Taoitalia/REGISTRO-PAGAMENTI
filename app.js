@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '473f0872';
+  const VERSIONE_APP = '772177f1';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -77,6 +77,13 @@
         if (x.versioneFoglio) S.versioneFoglio = x.versioneFoglio;
       }
     } catch (e) { console.warn(e); }
+    // destinatari scritti con la versione che li salvava nel foglio: tornano nelle impostazioni del dispositivo
+    if (S.dati.invii) {
+      const vecchi = Object.values(S.dati.invii).filter((x) => x && x.id && !x.eliminato);
+      if (vecchi.length && !Array.isArray(S.conf.invii)) S.conf.invii = vecchi.map((x) => ({ id: x.id, nome: x.nome || 'Destinatario', tel: x.telefono || '', corsi: String(x.corsi || '').split('|').filter(Boolean), ultimo: x.ultimo || null }));
+      delete S.dati.invii;
+      S.coda = S.coda.filter((x) => x.t !== 'invii');
+    }
     if (!S.conf.dispositivo) {
       const ua = navigator.userAgent || '';
       S.conf.dispositivo = (/Android/i.test(ua) ? 'Android' : /Windows/i.test(ua) ? 'PC' : 'Dispositivo') + ' ' + Math.random().toString(36).slice(2, 5).toUpperCase();
@@ -276,7 +283,7 @@
       '<select id="es" aria-label="Anno sportivo">' + esercizi().map((e) => '<option' + (e === S.es ? ' selected' : '') + '>' + e + '</option>').join('') + '</select>' +
       '<span id="sync">' + htmlSync() + '</span></header>' +
       '<nav class="tabs">' + visteAttive().map(([id, l]) => '<a href="#' + id + '" class="' + (S.view === id ? 'on' : '') + '"' + (S.view === id ? ' aria-current="page"' : '') + '>' + ICONE[id] + '<span>' + l + '</span></a>').join('') + '</nav>' +
-      '<main>' + ({ incassa: viewIncassa, corsi: viewCorsi, soci: viewSoci, ultimi: viewUltimi, cruscotto: viewCruscotto, altro: viewAltro }[S.view] || viewIncassa)() + '</main>';
+      '<main>' + (S.view === 'incassa' || S.view === 'corsi' ? bannerInvii() : '') + ({ incassa: viewIncassa, corsi: viewCorsi, soci: viewSoci, ultimi: viewUltimi, cruscotto: viewCruscotto, altro: viewAltro }[S.view] || viewIncassa)() + '</main>';
     renderDialog();
     if (att) { const n = document.getElementById(att); if (n && n.tagName === 'INPUT') { const v = n.value; n.focus(); try { n.setSelectionRange(v.length, v.length); } catch (e) { /* */ } } }
     window.scrollTo(0, y);
@@ -586,6 +593,255 @@
     return h + '</div>';
   }
 
+  // ------------------------------------------------------------------ quote da pagare su WhatsApp
+  // Ogni destinatario ha un telefono e uno o più corsi. Per ogni corso l'app disegna una tabella JPEG su sfondo
+  // bianco (da stampare) con le sole quote non pagate fino al mese in corso. Il lunedì ricorda di inviarle:
+  // un tocco apre la condivisione del telefono (WhatsApp, poi il contatto). Le impostazioni restano su questo
+  // dispositivo, così il promemoria compare solo qui e non sui telefoni degli allenatori.
+  function lunediDi(iso) {
+    const d = new Date(iso.slice(0, 10) + 'T12:00:00');
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  const invii = () => (Array.isArray(S.conf.invii) ? S.conf.invii : []);
+  const invio = (id) => invii().find((x) => x.id === id) || null;
+  const corsiInvio = (inv) => (inv.corsi || []).map(corso).filter((c) => c && !c.eliminato);
+  // destinatari proposti: basket Mandrogne da una parte, basket Spinetta (elementari e medie) dall'altra
+  function inviiProposti() {
+    const cs = corsi().filter((c) => c.attivo !== false);
+    const nome = (c) => String(c.nome || '') + ' ' + String(c.titolo || '');
+    const mandrogne = cs.filter((c) => /mandrogn/i.test(nome(c)) || /^\s*basket\s+m\s*$/i.test(c.nome));
+    const spinetta = cs.filter((c) => /basket/i.test(nome(c)) && (/spinett/i.test(nome(c)) || /\bsm\b/i.test(c.nome)));
+    const out = [];
+    out.push({ id: uid('w'), ruolo: 'mandrogne', nome: 'Basket Mandrogne', tel: '', corsi: mandrogne.map((c) => c.id), ultimo: null });
+    out.push({ id: uid('w'), ruolo: 'spinetta', nome: 'Basket Spinetta', tel: '', corsi: spinetta.map((c) => c.id), ultimo: null });
+    return out;
+  }
+  // i due destinatari fissi: corsi di Mandrogne da una parte, Spinetta elementari e medie dall'altra
+  const RUOLI = [['mandrogne', 'Corsi di Mandrogne'], ['spinetta', 'Spinetta elementari e medie']];
+  const invioRuolo = (r) => invii().find((x) => x.ruolo === r) || invii().find((x) => !x.ruolo && new RegExp(r, 'i').test(x.nome || '')) || null;
+  // procedura iniziale: si scrivono i due numeri, che restano questi finché non li cambi
+  function dlgNumeri() {
+    const d = S.dialog;
+    const prop = inviiProposti();
+    let h = '<h3>Numeri WhatsApp per le quote da pagare</h3>' +
+      '<p class="small muted" style="margin:0">Scrivi i numeri a cui mandare ogni lunedì le tabelle delle quote ancora da pagare. Restano questi, su questo dispositivo, finché non li cambi.</p>';
+    RUOLI.forEach(([r, etichetta]) => {
+      const inv = invioRuolo(r);
+      const cs = inv && corsiInvio(inv).length ? corsiInvio(inv) : (prop.find((x) => x.ruolo === r).corsi || []).map(corso).filter(Boolean);
+      const v = d.v[r] !== undefined ? d.v[r] : (inv && inv.tel) || '';
+      h += '<label class="field"><span>' + esc(etichetta) + '</span><input class="in" type="tel" inputmode="tel" data-numero="' + r + '" value="' + esc(v) + '" placeholder="es. 333 1234567"' + (r === 'mandrogne' ? ' autofocus' : '') + '>' +
+        '<small class="muted">' + (cs.length ? 'Tabelle: ' + esc(cs.map((c) => c.nome).join(', ')) + (cs.length > 1 ? ' (una per corso)' : '') : 'Nessun corso trovato: sceglilo poi in Altro.') + '</small></label>';
+    });
+    if (d.err) h += '<div class="msg err">' + esc(d.err) + '</div>';
+    return h + '<div class="azioni"><button class="btn ghost" data-act="chiudi">Annulla</button><button class="btn primary" data-act="numeri-salva">Salva i numeri</button></div>';
+  }
+  function salvaNumeri() {
+    const d = S.dialog;
+    const val = {};
+    for (const [r, etichetta] of RUOLI) {
+      const el = $('[data-numero="' + r + '"]');
+      const t = ((el && el.value) || '').trim();
+      if (t && !numeroTel(t)) { d.err = 'Il numero per «' + etichetta + '» non sembra valido.'; d.v[r] = t; renderDialog(); return; }
+      val[r] = t;
+    }
+    if (!val.mandrogne && !val.spinetta) { d.err = 'Scrivi almeno un numero.'; renderDialog(); return; }
+    const prop = inviiProposti();
+    const lista = invii().slice();
+    RUOLI.forEach(([r]) => {
+      let inv = invioRuolo(r);
+      if (!inv) { inv = prop.find((x) => x.ruolo === r); lista.push(inv); }
+      inv.ruolo = r;
+      inv.tel = val[r];
+    });
+    S.conf.invii = lista;
+    S.dialog = null; salva(); render();
+    toast('Numeri salvati: ' + RUOLI.filter(([r]) => val[r]).map(([r, e]) => e + ' ' + val[r]).join(' · ') + '.');
+  }
+  // quote non pagate di un corso, dall'inizio dell'anno sportivo al mese in corso (iscrizione compresa)
+  function quoteDaPagare(c) {
+    const es = esCorrente(), ora = meseCorrente();
+    const mesi = mesiCorso(c, es).filter((ym) => ym <= ora);
+    const qIscr = Number(S.conf.quotaIscrizione) || 0;
+    const righe = [];
+    iscrizioniCorso(c.id, es).forEach((i) => {
+      const so = socio(i.socio);
+      const st = situazione(so.id, es);
+      const nd = nonDovuti(i);
+      const q = quotaIsc(i);
+      const iscr = !st.iscrPagata && !st.iscrNonDovuta ? qIscr : 0;
+      const m = mesi.map((ym) => (st.cell.has(c.id + '|' + ym) || nd.has(ym) ? 0 : q));
+      const tot = r2(iscr + m.reduce((a, b) => a + b, 0));
+      if (tot > 0.004) righe.push({ nome: so.nominativo, iscr, mesi: m, tot });
+    });
+    righe.sort((a, b) => a.nome.localeCompare(b.nome, 'it'));
+    const conIscr = righe.some((r) => r.iscr > 0);
+    return { corso: c, es, ora, mesi, righe, conIscr, totale: r2(righe.reduce((a, r) => a + r.tot, 0)) };
+  }
+  // la tabella come immagine: sfondo bianco, testo nero, righe sottili, pronta per la stampa
+  function disegnaQuote(T) {
+    const M = 56, rowH = 46, font = 'Arial, Helvetica, sans-serif';
+    const cv = document.createElement('canvas');
+    let ctx = cv.getContext('2d');
+    ctx.font = '22px ' + font;
+    const lungo = T.righe.reduce((w, r) => Math.max(w, ctx.measureText(r.nome).width), ctx.measureText('Socio').width);
+    const wNome = Math.min(520, Math.max(300, Math.ceil(lungo) + 28));
+    const cols = [{ t: 'N.', w: 56, al: 'right' }, { t: 'Socio', w: wNome, al: 'left' }]
+      .concat(T.conIscr ? [{ t: 'Iscr.', w: 86, al: 'center' }] : [])
+      .concat(T.mesi.map((ym) => ({ t: mese3(ym).charAt(0).toUpperCase() + mese3(ym).slice(1), w: 86, al: 'center', ora: ym === T.ora })))
+      .concat([{ t: 'Totale', w: 124, al: 'right' }]);
+    const wTab = cols.reduce((a, c) => a + c.w, 0);
+    const W = Math.max(1000, wTab + 2 * M);
+    const x0 = Math.round((W - wTab) / 2);
+    const nR = Math.max(1, T.righe.length);
+    const H = M + 112 + rowH + nR * rowH + (T.righe.length ? rowH : 0) + 70 + M;
+    const K = 2; // doppia risoluzione: la stampa resta nitida
+    cv.width = W * K; cv.height = H * K;
+    ctx = cv.getContext('2d');
+    ctx.scale(K, K);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#000000'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 34px ' + font; ctx.textAlign = 'left';
+    ctx.fillText(titoloCorso(T.corso).toUpperCase(), x0, M + 18);
+    ctx.font = '22px ' + font; ctx.fillStyle = '#333333';
+    ctx.fillText('Quote da pagare al ' + fmtData(oggi()) + ' (fino a ' + meseNome(T.ora) + ') · anno sportivo ' + T.es, x0, M + 62);
+    let y = M + 112;
+    const cella = (txt, c, x, yy, bold) => {
+      ctx.font = (bold ? 'bold ' : '') + '22px ' + font; ctx.fillStyle = '#000000';
+      let t = String(txt);
+      const max = c.w - 20;
+      if (ctx.measureText(t).width > max) { while (t.length > 1 && ctx.measureText(t + '…').width > max) t = t.slice(0, -1); t += '…'; }
+      ctx.textAlign = c.al === 'right' ? 'right' : c.al === 'center' ? 'center' : 'left';
+      ctx.fillText(t, c.al === 'right' ? x + c.w - 10 : c.al === 'center' ? x + c.w / 2 : x + 10, yy + rowH / 2 + 1);
+    };
+    const riga = (valori, yy, opz) => {
+      const o = opz || {};
+      if (o.fondo) { ctx.fillStyle = o.fondo; ctx.fillRect(x0, yy, wTab, rowH); }
+      let x = x0;
+      cols.forEach((c, k) => { if (valori[k] !== '' && valori[k] != null) cella(valori[k], c, x, yy, o.bold); x += c.w; });
+    };
+    const imp = (v) => (v > 0.004 ? impBreve(v) : '');
+    // intestazione
+    riga(cols.map((c) => c.t), y, { fondo: '#e4e4e4', bold: true });
+    const yTab = y;
+    y += rowH;
+    if (!T.righe.length) {
+      ctx.font = 'italic 22px ' + font; ctx.fillStyle = '#000000'; ctx.textAlign = 'center';
+      ctx.fillText('Nessuna quota da pagare', x0 + wTab / 2, y + rowH / 2 + 1);
+      y += rowH;
+    }
+    T.righe.forEach((r, k) => {
+      riga([k + 1, r.nome].concat(T.conIscr ? [imp(r.iscr)] : []).concat(r.mesi.map(imp)).concat([eur(r.tot)]), y, { fondo: k % 2 ? '#f3f3f3' : null });
+      y += rowH;
+    });
+    if (T.righe.length) {
+      const tm = T.mesi.map((_, j) => r2(T.righe.reduce((a, r) => a + r.mesi[j], 0)));
+      const ti = r2(T.righe.reduce((a, r) => a + r.iscr, 0));
+      riga(['', 'Totale (' + T.righe.length + (T.righe.length === 1 ? ' socio)' : ' soci)')].concat(T.conIscr ? [imp(ti)] : []).concat(tm.map(imp)).concat([eur(T.totale)]), y, { fondo: '#e4e4e4', bold: true });
+      y += rowH;
+    }
+    // griglia
+    ctx.strokeStyle = '#7a7a7a'; ctx.lineWidth = 1;
+    for (let yy = yTab; yy <= y + 0.5; yy += rowH) { ctx.beginPath(); ctx.moveTo(x0, yy + 0.5); ctx.lineTo(x0 + wTab, yy + 0.5); ctx.stroke(); }
+    let x = x0;
+    cols.forEach((c) => { ctx.beginPath(); ctx.moveTo(x + 0.5, yTab); ctx.lineTo(x + 0.5, y); ctx.stroke(); x += c.w; });
+    ctx.beginPath(); ctx.moveTo(x0 + wTab - 0.5, yTab); ctx.lineTo(x0 + wTab - 0.5, y); ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#000000';
+    ctx.strokeRect(x0, yTab, wTab, y - yTab);
+    if (T.righe.length) { ctx.beginPath(); ctx.moveTo(x0, y - rowH); ctx.lineTo(x0 + wTab, y - rowH); ctx.stroke(); }
+    ctx.font = '19px ' + font; ctx.fillStyle = '#444444'; ctx.textAlign = 'left';
+    ctx.fillText('Importi in euro.' + (T.conIscr ? ' Iscr. = quota di iscrizione.' : '') + ' Le caselle vuote sono pagate o da non incassare.', x0, y + 36);
+    return cv;
+  }
+  const blobDa = (cv, tipo, q) => new Promise((ok, ko) => cv.toBlob((b) => (b ? ok(b) : ko(new Error('Immagine non creata.'))), tipo, q));
+  async function immaginiInvio(inv) {
+    const out = [];
+    for (const c of corsiInvio(inv)) {
+      const T = quoteDaPagare(c);
+      const cv = disegnaQuote(T);
+      const blob = await blobDa(cv, 'image/jpeg', 0.92);
+      const nome = 'Quote da pagare ' + String(c.nome).replace(/[\\/:*?"<>|]/g, '') + ' ' + oggi() + '.jpg';
+      out.push({ corso: c, T, cv, blob, file: new File([blob], nome, { type: 'image/jpeg' }), nome });
+    }
+    return out;
+  }
+  const testoInvio = (inv, imm) => 'Quote da pagare al ' + fmtData(oggi()) + ': ' + imm.map((x) => titoloCorso(x.corso) + (x.T.righe.length ? ' € ' + eur(x.T.totale) : ' nessuna')).join(' · ');
+  function segnaInviato(inv) { inv.ultimo = lunediDi(oggi()); salva(); render(); }
+  const puoCondividere = (files) => { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files })); } catch (e) { return false; } };
+  // un tocco: condivisione del telefono con le immagini; senza condivisione (alcuni PC) si apre l'anteprima
+  async function inviaQuote(id) {
+    const inv = invio(id);
+    if (!inv) return;
+    if (!corsiInvio(inv).length) { toast('Scegli prima i corsi di «' + inv.nome + '» in Altro.', 'err'); vai('altro'); return; }
+    if (!numeroTel(inv.tel)) { apri({ tipo: 'numeri', v: {} }); return; }
+    let imm;
+    try { imm = await immaginiInvio(inv); } catch (e) { toast(e.message || 'Immagine non creata.', 'err'); return; }
+    const files = imm.map((x) => x.file);
+    if (!puoCondividere(files)) { apriAnteprima(inv, imm); return; }
+    try {
+      await navigator.share({ files, text: testoInvio(inv, imm) });
+      segnaInviato(inv);
+      toast('Quote di «' + inv.nome + '» inviate.');
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // condivisione annullata
+      apriAnteprima(inv, imm); // per esempio il tocco è «scaduto» mentre l'immagine si preparava
+    }
+  }
+  function apriAnteprima(inv, imm) {
+    if (S.dialog && S.dialog.tipo === 'quote') (S.dialog.url || []).forEach((u) => URL.revokeObjectURL(u));
+    apri({ tipo: 'quote', id: inv.id, imm, url: imm.map((x) => URL.createObjectURL(x.blob)) });
+  }
+  async function anteprimaQuote(id) {
+    const inv = invio(id);
+    if (!inv) return;
+    if (!corsiInvio(inv).length) { toast('Scegli prima almeno un corso.', 'err'); return; }
+    try { apriAnteprima(inv, await immaginiInvio(inv)); } catch (e) { toast(e.message || 'Immagine non creata.', 'err'); }
+  }
+  function dlgQuote() {
+    const d = S.dialog, inv = invio(d.id);
+    if (!inv) return '<h3>Destinatario non trovato</h3><div class="azioni"><button class="btn ghost" data-act="chiudi">Chiudi</button></div>';
+    const files = d.imm.map((x) => x.file);
+    const share = puoCondividere(files);
+    const n = numeroTel(inv.tel);
+    let h = '<h3>Quote da pagare · ' + esc(inv.nome) + '</h3>' +
+      '<p class="small muted" style="margin:0">' + (inv.tel ? 'Per ' + esc(inv.tel) + '. ' : '') + (share ? 'Premi «Invia su WhatsApp», scegli WhatsApp e il contatto.' : 'Su questo dispositivo l’app non può passare le immagini a WhatsApp: copia una tabella, apri la chat, incolla (Ctrl+V) e invia; poi la successiva. Oppure scaricale e allegale.') + '</p>';
+    d.imm.forEach((x, k) => {
+      h += '<figure class="inv-img"><img src="' + d.url[k] + '" alt="Tabella quote da pagare ' + esc(x.corso.nome) + '"><figcaption><b>' + esc(titoloCorso(x.corso)) + '</b> · ' + (x.T.righe.length ? x.T.righe.length + (x.T.righe.length === 1 ? ' socio' : ' soci') + ', € ' + eur(x.T.totale) : 'nessuna quota da pagare') +
+        '<span class="inv-az">' + (!share && navigator.clipboard && window.ClipboardItem ? '<button class="btn sm" data-inv-copia="' + k + '">Copia</button>' : '') + '<button class="btn sm ghost" data-inv-scarica="' + k + '">Scarica</button></span></figcaption></figure>';
+    });
+    h += '<div class="azioni"><button class="btn ghost" data-act="chiudi">Chiudi</button>' + (share ? '<button class="btn primary" data-inv-condividi="' + esc(inv.id) + '">Invia su WhatsApp</button>' :
+      (n ? '<a class="btn primary" href="https://wa.me/' + n + '" target="_blank" rel="noopener">Apri la chat WhatsApp</a>' : '') + '<button class="btn" data-inv-fatto="' + esc(inv.id) + '">Segna come inviato</button>') + '</div>';
+    return h;
+  }
+  // promemoria del lunedì: resta finché le quote della settimana non sono state inviate
+  function bannerInvii() {
+    const lun = lunediDi(oggi());
+    const da = invii().filter((x) => corsiInvio(x).length && numeroTel(x.tel) && (x.ultimo || '') < lun);
+    if (!da.length) return '';
+    return '<div class="panel pad inv-banner"><div><b>Quote da pagare: invio del lunedì</b><div class="small muted">Tabelle con le quote non pagate fino a ' + esc(meseNome(meseCorrente())) + ', da mandare su WhatsApp.</div></div>' +
+      '<div class="row">' + da.map((x) => '<button class="btn primary" data-inv-invia="' + esc(x.id) + '">' + ICONA_MSG + esc(x.nome) + '</button>').join('') +
+      '<button class="btn ghost sm" data-act="inv-salta" title="Nasconde il promemoria fino a lunedì prossimo">Non questa settimana</button></div></div>';
+  }
+  function inviiHtml() {
+    const lista = invii();
+    const cs = corsi().filter((c) => c.attivo !== false);
+    let h = '<div class="panel pad stack"><h2 class="sez">Quote da pagare su WhatsApp</h2>' +
+      '<p class="small muted" style="margin:0">Per ogni destinatario, una tabella JPEG per corso (sfondo bianco, da stampare) con le sole quote non pagate fino al mese in corso. Ogni lunedì, finché non le invii, in Incassa e in Corsi compare il promemoria: un tocco apre la condivisione, scegli WhatsApp e il contatto. Queste impostazioni valgono solo per questo dispositivo.</p>';
+    if (!lista.length) return h + '<div><button class="btn primary" data-act="inv-numeri">Inserisci i numeri WhatsApp</button></div></div>';
+    h += '<div class="inv-numeri">' + RUOLI.map(([r, e]) => { const x = invioRuolo(r); return '<div><span class="small muted">' + esc(e) + '</span><b>' + esc((x && x.tel) || 'nessun numero') + '</b></div>'; }).join('') +
+      '<button class="btn sm" data-act="inv-numeri">Cambia i numeri</button></div>';
+    lista.forEach((x) => {
+      h += '<div class="inv-card stack" data-inv-id="' + esc(x.id) + '"><div class="row">' +
+        '<label class="field"><span>Destinatario</span><input class="in" data-inv="' + esc(x.id) + '|nome" value="' + esc(x.nome) + '"></label>' +
+        '<label class="field"><span>Telefono WhatsApp</span><input class="in" type="tel" inputmode="tel" data-inv="' + esc(x.id) + '|tel" value="' + esc(x.tel || '') + '" placeholder="es. 333 1234567"></label></div>' +
+        '<div><div class="small muted" style="margin-bottom:6px">Corsi (una tabella per corso)</div><div class="inv-corsi">' + cs.map((c) => '<button class="inv-chip' + ((x.corsi || []).includes(c.id) ? ' on' : '') + '" data-inv-corso="' + esc(x.id + '|' + c.id) + '" aria-pressed="' + (x.corsi || []).includes(c.id) + '">' + esc(c.nome) + '</button>').join('') + '</div></div>' +
+        (x.tel && !numeroTel(x.tel) ? '<div class="msg err">Il numero non sembra valido.</div>' : '') +
+        '<div class="row" style="align-items:center"><button class="btn sm" data-inv-anteprima="' + esc(x.id) + '">Anteprima</button><button class="btn sm primary" data-inv-invia="' + esc(x.id) + '">Invia ora</button><button class="btn sm ghost" data-inv-del="' + esc(x.id) + '">Elimina</button>' +
+        '<span class="small muted">' + (x.ultimo ? 'Inviato la settimana del ' + esc(fmtData(x.ultimo)) : 'Mai inviato') + '</span></div></div>';
+    });
+    return h + '<div><button class="btn sm" data-act="inv-nuovo">+ Nuovo destinatario</button></div></div>';
+  }
+
   // ------------------------------------------------------------------ vista: altro (impostazioni)
   function viewAltro() {
     const c = S.conf;
@@ -599,6 +855,7 @@
       '</div>';
     h += '<div class="panel pad stack"><h2 class="sez">Questo dispositivo</h2><div class="row"><label class="field"><span>Nome del dispositivo</span><input class="in" id="c-disp" value="' + esc(c.dispositivo) + '"></label>' +
       '<label class="field"><span>Quota di iscrizione €</span><input class="in num" id="c-iscr" inputmode="decimal" value="' + esc(String(c.quotaIscrizione).replace('.', ',')) + '"></label></div><div><button class="btn" data-act="salva-conf">Salva</button></div></div>';
+    h += inviiHtml();
     h += '<div class="panel pad stack"><h2 class="sez">Corsi</h2><div class="lista" style="margin:0 -16px">' + corsi().map((x) => '<button class="voce" data-corso-ed="' + esc(x.id) + '"><span class="t"><b>' + esc(x.nome) + (x.attivo === false ? ' <span class="pill">non attivo</span>' : '') + '</b><small>' + esc(x.titolo || '') + ' · ' + String(x.mesi || '').length + ' mesi</small></span><span class="r"><b>€ ' + eur(x.quota) + '</b><small class="muted">al mese</small></span></button>').join('') + '</div><div><button class="btn" data-act="nuovo-corso">+ Nuovo corso</button></div></div>';
     h += '<div class="panel pad stack"><h2 class="sez">Registro Excel</h2><p class="small muted" style="margin:0">Importa corsi, soci, pagamenti, mesi grigi e certificati dal file del registro (si fa una volta sola, dal PC). Le celle rosse e quelle senza una data valida non vengono importate.</p><div><label class="btn">Importa il registro Excel<input type="file" id="imp-xlsx" accept=".xlsx" hidden></label></div></div>';
     h += '<div class="panel pad stack"><h2 class="sez">Copia dei dati</h2><p class="small muted" style="margin:0">Scarica tutto l’archivio in un file: il Bilancio lo può leggere anche senza collegamento al foglio.</p><div class="row"><button class="btn" data-act="esporta">Scarica l’archivio (.json)</button>' + (collegato() ? '<button class="btn" data-act="ricarica">Riscarica tutto dal foglio</button>' : '') + '</div></div>';
@@ -608,14 +865,14 @@
 
   // ------------------------------------------------------------------ finestre
   function apri(d) { S.dialog = d; renderDialog(); }
-  function chiudi() { S.dialog = null; renderDialog(); }
+  function chiudi() { if (S.dialog && S.dialog.tipo === 'quote') (S.dialog.url || []).forEach((u) => URL.revokeObjectURL(u)); S.dialog = null; renderDialog(); }
   function renderDialog() {
     const box = $('#dialog');
     if (!S.dialog) { box.innerHTML = ''; box.hidden = true; document.body.style.overflow = ''; return; }
     box.hidden = false;
     document.body.style.overflow = 'hidden';
     const d = S.dialog;
-    const html = { cella: dlgCella, socio: dlgSocio, iscrivi: dlgIscrivi, versamento: dlgVersamento, corso: dlgCorso, importa: dlgImporta, collega: dlgCollega }[d.tipo]();
+    const html = { cella: dlgCella, socio: dlgSocio, iscrivi: dlgIscrivi, versamento: dlgVersamento, corso: dlgCorso, importa: dlgImporta, collega: dlgCollega, quote: dlgQuote, numeri: dlgNumeri }[d.tipo]();
     box.innerHTML = '<div class="velo" data-chiudi><div class="dialog" role="dialog" aria-modal="true">' + html + '</div></div>';
     const f = box.querySelector('[autofocus]');
     if (f) f.focus();
@@ -1056,6 +1313,34 @@
       }
       if (act === 'salva-conf') { S.conf.dispositivo = ($('#c-disp').value || '').trim() || S.conf.dispositivo; const q = numIn($('#c-iscr').value); if (q != null) S.conf.quotaIscrizione = q; salva(); render(); toast('Salvato.'); return; }
       if (act === 'esporta') { esporta(); return; }
+      if (act === 'inv-numeri') { apri({ tipo: 'numeri', v: {} }); return; }
+      if (act === 'numeri-salva') { salvaNumeri(); return; }
+      if (act === 'inv-nuovo') { S.conf.invii = invii().concat([{ id: uid('w'), nome: 'Destinatario', tel: '', corsi: [], ultimo: null }]); salva(); render(); return; }
+      if (act === 'inv-salta') { const lun = lunediDi(oggi()); invii().forEach((x) => { if ((x.ultimo || '') < lun) x.ultimo = lun; }); salva(); render(); toast('Promemoria nascosto fino a lunedì prossimo.'); return; }
+      if (ds.invInvia) { inviaQuote(ds.invInvia); return; }
+      if (ds.invAnteprima) { anteprimaQuote(ds.invAnteprima); return; }
+      if (ds.invCondividi) {
+        const inv = invio(ds.invCondividi), d = S.dialog;
+        if (!inv || !d) return;
+        navigator.share({ files: d.imm.map((x) => x.file), text: testoInvio(inv, d.imm) })
+          .then(() => { chiudi(); segnaInviato(inv); toast('Quote di «' + inv.nome + '» inviate.'); })
+          .catch((e) => { if (!e || e.name !== 'AbortError') toast('Condivisione non riuscita: scarica le immagini e allegale in WhatsApp.', 'err'); });
+        return;
+      }
+      if (ds.invFatto) { const inv = invio(ds.invFatto); if (inv) { chiudi(); segnaInviato(inv); toast('Segnato come inviato per questa settimana.'); } return; }
+      if (ds.invScarica !== undefined && S.dialog && S.dialog.imm) {
+        const x = S.dialog.imm[Number(ds.invScarica)];
+        const a = document.createElement('a'); a.href = S.dialog.url[Number(ds.invScarica)]; a.download = x.nome; document.body.appendChild(a); a.click(); a.remove();
+        return;
+      }
+      if (ds.invCopia !== undefined && S.dialog && S.dialog.imm) {
+        const x = S.dialog.imm[Number(ds.invCopia)];
+        blobDa(x.cv, 'image/png').then((b) => navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]))
+          .then(() => toast('Tabella copiata: nella chat premi Ctrl+V e poi Invio.'), () => toast('Copia non riuscita: usa «Scarica».', 'err'));
+        return;
+      }
+      if (ds.invDel) { const prima = invii().slice(); S.conf.invii = invii().filter((x) => x.id !== ds.invDel); salva(); render(); toast('Destinatario eliminato.', '', { label: 'Annulla', fn: () => { S.conf.invii = prima; salva(); render(); } }); return; }
+      if (ds.invCorso) { const [iid, cid] = ds.invCorso.split('|'); const inv = invio(iid); if (inv) { const set = new Set(inv.corsi || []); if (set.has(cid)) set.delete(cid); else set.add(cid); inv.corsi = corsi().map((c) => c.id).filter((k) => set.has(k)); salva(); render(); } return; }
       if (act === 'link-collega') { apri({ tipo: 'collega' }); return; }
       if (act === 'copia-link') { const l = linkCollega(); (navigator.clipboard ? navigator.clipboard.writeText(l) : Promise.reject()).then(() => toast('Link copiato.'), () => { window.prompt('Copia il link:', l); }); return; }
       if (act === 'condividi-link') { navigator.share({ title: 'Registro pagamenti', text: 'Collega l’app Registro pagamenti', url: linkCollega() }).catch(() => {}); return; }
@@ -1118,6 +1403,7 @@
       if (t.id === 'cerca-ultimi') { S.qUltimi = t.value; render(); return; }
       if (t.id === 'cerca-iscr') { S.dialog.q = t.value; renderDialog(); const n = $('#cerca-iscr'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } return; }
       if (t.dataset.v !== undefined && S.dialog && S.dialog.v) { S.dialog.v[t.dataset.v] = t.type === 'checkbox' ? t.checked : t.value; return; }
+      if (t.dataset.numero && S.dialog && S.dialog.tipo === 'numeri') { S.dialog.v[t.dataset.numero] = t.value; return; }
       if (t.dataset.quotaIsc !== undefined && S.dialog) { (S.dialog.quote = S.dialog.quote || {})[t.dataset.quotaIsc] = t.value; return; }
       if (t.dataset.impQuota !== undefined && S.imp) { S.imp.quote[t.dataset.impQuota] = t.value; return; }
       if (t.id === 'f-nota') { S.F.nota = t.value; return; }
@@ -1130,6 +1416,7 @@
       if (t.dataset.impIscr !== undefined) { const q = numIn(t.value); if (q != null) S.F.impIscr = q; render(); return; }
       if (t.dataset.ricorda !== undefined) { S.F.ricorda[t.dataset.ricorda] = t.checked; return; }
       if (t.dataset.v !== undefined && S.dialog && S.dialog.v) { S.dialog.v[t.dataset.v] = t.type === 'checkbox' ? t.checked : t.value; return; }
+      if (t.dataset.inv) { const [iid, k] = t.dataset.inv.split('|'); const inv = invio(iid); if (inv) { inv[k] = t.value.trim() || (k === 'nome' ? 'Destinatario' : ''); salva(); render(); } return; }
       if (t.id === 'imp-xlsx' && t.files && t.files[0]) { const f = t.files[0]; t.value = ''; leggiExcel(f).catch((e) => toast(e.message || 'Il file non si legge.', 'err')); }
     });
     document.addEventListener('keydown', (ev) => {
