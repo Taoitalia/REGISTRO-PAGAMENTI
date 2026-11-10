@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '772177f1';
+  const VERSIONE_APP = '2149930c';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -595,14 +595,13 @@
 
   // ------------------------------------------------------------------ quote da pagare su WhatsApp
   // Ogni destinatario ha un telefono e uno o più corsi. Per ogni corso l'app disegna una tabella JPEG su sfondo
-  // bianco (da stampare) con le sole quote non pagate fino al mese in corso. Il lunedì ricorda di inviarle:
-  // un tocco apre la condivisione del telefono (WhatsApp, poi il contatto). Le impostazioni restano su questo
-  // dispositivo, così il promemoria compare solo qui e non sui telefoni degli allenatori.
-  function lunediDi(iso) {
-    const d = new Date(iso.slice(0, 10) + 'T12:00:00');
-    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
-  }
+  // bianco (da stampare) con le sole quote non pagate fino al mese in corso. Si inviano in qualsiasi momento:
+  // al tocco l'app legge prima i dati aggiornati dal Foglio Google, poi apre la condivisione del telefono
+  // (WhatsApp, poi il contatto). Le impostazioni restano su questo dispositivo, così i pulsanti compaiono solo
+  // qui e non sui telefoni degli allenatori.
+  const oraBreve = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+  // data (e ora) dell'ultimo invio; i valori vecchi erano il lunedì della settimana
+  const testoUltimo = (u) => (u ? 'Ultimo invio: ' + fmtData(String(u).slice(0, 10)) + (String(u).length > 10 ? ' alle ' + oraBreve(u) : '') : 'Mai inviato');
   const invii = () => (Array.isArray(S.conf.invii) ? S.conf.invii : []);
   const invio = (id) => invii().find((x) => x.id === id) || null;
   const corsiInvio = (inv) => (inv.corsi || []).map(corso).filter((c) => c && !c.eliminato);
@@ -625,7 +624,7 @@
     const d = S.dialog;
     const prop = inviiProposti();
     let h = '<h3>Numeri WhatsApp per le quote da pagare</h3>' +
-      '<p class="small muted" style="margin:0">Scrivi i numeri a cui mandare ogni lunedì le tabelle delle quote ancora da pagare. Restano questi, su questo dispositivo, finché non li cambi.</p>';
+      '<p class="small muted" style="margin:0">Scrivi i numeri a cui mandare le tabelle delle quote ancora da pagare. Restano questi, su questo dispositivo, finché non li cambi.</p>';
     RUOLI.forEach(([r, etichetta]) => {
       const inv = invioRuolo(r);
       const cs = inv && corsiInvio(inv).length ? corsiInvio(inv) : (prop.find((x) => x.ruolo === r).corsi || []).map(corso).filter(Boolean);
@@ -704,7 +703,7 @@
     ctx.font = 'bold 34px ' + font; ctx.textAlign = 'left';
     ctx.fillText(titoloCorso(T.corso).toUpperCase(), x0, M + 18);
     ctx.font = '22px ' + font; ctx.fillStyle = '#333333';
-    ctx.fillText('Quote da pagare al ' + fmtData(oggi()) + ' (fino a ' + meseNome(T.ora) + ') · anno sportivo ' + T.es, x0, M + 62);
+    ctx.fillText('Quote da pagare al ' + fmtData(oggi()) + ' alle ' + oraBreve(T.alle || adesso()) + ' (fino a ' + meseNome(T.ora) + ') · anno sportivo ' + T.es, x0, M + 62);
     let y = M + 112;
     const cella = (txt, c, x, yy, bold) => {
       ctx.font = (bold ? 'bold ' : '') + '22px ' + font; ctx.fillStyle = '#000000';
@@ -756,8 +755,10 @@
   const blobDa = (cv, tipo, q) => new Promise((ok, ko) => cv.toBlob((b) => (b ? ok(b) : ko(new Error('Immagine non creata.'))), tipo, q));
   async function immaginiInvio(inv) {
     const out = [];
+    const alle = adesso();
     for (const c of corsiInvio(inv)) {
       const T = quoteDaPagare(c);
+      T.alle = alle;
       const cv = disegnaQuote(T);
       const blob = await blobDa(cv, 'image/jpeg', 0.92);
       const nome = 'Quote da pagare ' + String(c.nome).replace(/[\\/:*?"<>|]/g, '') + ' ' + oggi() + '.jpg';
@@ -765,8 +766,26 @@
     }
     return out;
   }
-  const testoInvio = (inv, imm) => 'Quote da pagare al ' + fmtData(oggi()) + ': ' + imm.map((x) => titoloCorso(x.corso) + (x.T.righe.length ? ' € ' + eur(x.T.totale) : ' nessuna')).join(' · ');
-  function segnaInviato(inv) { inv.ultimo = lunediDi(oggi()); salva(); render(); }
+  const testoInvio = (inv, imm) => 'Quote da pagare al ' + fmtData(oggi()) + ' alle ' + oraBreve(imm.length ? imm[0].T.alle : adesso()) + ': ' + imm.map((x) => titoloCorso(x.corso) + (x.T.righe.length ? ' € ' + eur(x.T.totale) : ' nessuna')).join(' · ');
+  function segnaInviato(inv) { inv.ultimo = adesso(); salva(); render(); }
+  // prima di disegnare le tabelle si leggono i dati aggiornati dal Foglio Google (pagamenti appena registrati,
+  // anche dagli altri telefoni); se il foglio non risponde si usano quelli del telefono, e lo si dice
+  let inviiInCorso = null;
+  async function datiAggiornati() {
+    if (!collegato()) return 'Dati di questo telefono (non collegato al Foglio Google).';
+    if (navigator.onLine === false) return 'Sei offline: dati di questo telefono' + (S.sync.ultima ? ', aggiornati alle ' + oraBreve(S.sync.ultima) + ' del ' + fmtData(String(S.sync.ultima).slice(0, 10)) : '') + '.';
+    await sincronizza();
+    return S.sync.stato === 'ok' ? null : 'Il foglio non ha risposto: dati di questo telefono' + (S.sync.ultima ? ', aggiornati alle ' + oraBreve(S.sync.ultima) + ' del ' + fmtData(String(S.sync.ultima).slice(0, 10)) : '') + '.';
+  }
+  // durante la lettura dei dati il pulsante premuto dice cosa sta facendo (niente messaggi sopra i pulsanti)
+  function inviiOccupati(id, on) {
+    inviiInCorso = on ? id : null;
+    document.querySelectorAll('[data-inv-invia],[data-inv-anteprima]').forEach((b) => {
+      b.disabled = !!on;
+      if (on && (b.dataset.invInvia === id || b.dataset.invAnteprima === id)) { b.classList.add('in-corso'); b.dataset.testo = b.innerHTML; b.textContent = 'Leggo i pagamenti…'; }
+      else if (!on && b.dataset.testo) { b.classList.remove('in-corso'); b.innerHTML = b.dataset.testo; delete b.dataset.testo; }
+    });
+  }
   const puoCondividere = (files) => { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files })); } catch (e) { return false; } };
   // un tocco: condivisione del telefono con le immagini; senza condivisione (alcuni PC) si apre l'anteprima
   async function inviaQuote(id) {
@@ -774,28 +793,34 @@
     if (!inv) return;
     if (!corsiInvio(inv).length) { toast('Scegli prima i corsi di «' + inv.nome + '» in Altro.', 'err'); vai('altro'); return; }
     if (!numeroTel(inv.tel)) { apri({ tipo: 'numeri', v: {} }); return; }
-    let imm;
-    try { imm = await immaginiInvio(inv); } catch (e) { toast(e.message || 'Immagine non creata.', 'err'); return; }
+    if (inviiInCorso) return;
+    inviiOccupati(id, true);
+    let imm, avviso;
+    try { avviso = await datiAggiornati(); imm = await immaginiInvio(inv); } catch (e) { inviiOccupati(id, false); toast(e.message || 'Immagine non creata.', 'err'); return; }
+    inviiOccupati(id, false);
+    if (avviso) toast(avviso, 'err');
     const files = imm.map((x) => x.file);
-    if (!puoCondividere(files)) { apriAnteprima(inv, imm); return; }
+    if (!puoCondividere(files)) { apriAnteprima(inv, imm, avviso); return; }
     try {
       await navigator.share({ files, text: testoInvio(inv, imm) });
       segnaInviato(inv);
       toast('Quote di «' + inv.nome + '» inviate.');
     } catch (e) {
       if (e && e.name === 'AbortError') return; // condivisione annullata
-      apriAnteprima(inv, imm); // per esempio il tocco è «scaduto» mentre l'immagine si preparava
+      apriAnteprima(inv, imm, avviso); // per esempio il tocco è «scaduto» mentre si leggevano i dati
     }
   }
-  function apriAnteprima(inv, imm) {
+  function apriAnteprima(inv, imm, avviso) {
     if (S.dialog && S.dialog.tipo === 'quote') (S.dialog.url || []).forEach((u) => URL.revokeObjectURL(u));
-    apri({ tipo: 'quote', id: inv.id, imm, url: imm.map((x) => URL.createObjectURL(x.blob)) });
+    apri({ tipo: 'quote', id: inv.id, imm, avviso: avviso || null, url: imm.map((x) => URL.createObjectURL(x.blob)) });
   }
   async function anteprimaQuote(id) {
     const inv = invio(id);
     if (!inv) return;
     if (!corsiInvio(inv).length) { toast('Scegli prima almeno un corso.', 'err'); return; }
-    try { apriAnteprima(inv, await immaginiInvio(inv)); } catch (e) { toast(e.message || 'Immagine non creata.', 'err'); }
+    if (inviiInCorso) return;
+    inviiOccupati(id, true);
+    try { const avviso = await datiAggiornati(); inviiOccupati(id, false); apriAnteprima(inv, await immaginiInvio(inv), avviso); } catch (e) { inviiOccupati(id, false); toast(e.message || 'Immagine non creata.', 'err'); }
   }
   function dlgQuote() {
     const d = S.dialog, inv = invio(d.id);
@@ -804,7 +829,8 @@
     const share = puoCondividere(files);
     const n = numeroTel(inv.tel);
     let h = '<h3>Quote da pagare · ' + esc(inv.nome) + '</h3>' +
-      '<p class="small muted" style="margin:0">' + (inv.tel ? 'Per ' + esc(inv.tel) + '. ' : '') + (share ? 'Premi «Invia su WhatsApp», scegli WhatsApp e il contatto.' : 'Su questo dispositivo l’app non può passare le immagini a WhatsApp: copia una tabella, apri la chat, incolla (Ctrl+V) e invia; poi la successiva. Oppure scaricale e allegale.') + '</p>';
+      (d.avviso ? '<div class="msg err" style="margin:0">' + esc(d.avviso) + '</div>' : '') +
+      '<p class="small muted" style="margin:0">Dati aggiornati alle ' + esc(oraBreve(d.imm.length ? d.imm[0].T.alle : adesso())) + '. ' + (inv.tel ? 'Per ' + esc(inv.tel) + '. ' : '') + (share ? 'Premi «Invia su WhatsApp», scegli WhatsApp e il contatto.' : 'Su questo dispositivo l’app non può passare le immagini a WhatsApp: copia una tabella, apri la chat, incolla (Ctrl+V) e invia; poi la successiva. Oppure scaricale e allegale.') + '</p>';
     d.imm.forEach((x, k) => {
       h += '<figure class="inv-img"><img src="' + d.url[k] + '" alt="Tabella quote da pagare ' + esc(x.corso.nome) + '"><figcaption><b>' + esc(titoloCorso(x.corso)) + '</b> · ' + (x.T.righe.length ? x.T.righe.length + (x.T.righe.length === 1 ? ' socio' : ' soci') + ', € ' + eur(x.T.totale) : 'nessuna quota da pagare') +
         '<span class="inv-az">' + (!share && navigator.clipboard && window.ClipboardItem ? '<button class="btn sm" data-inv-copia="' + k + '">Copia</button>' : '') + '<button class="btn sm ghost" data-inv-scarica="' + k + '">Scarica</button></span></figcaption></figure>';
@@ -813,20 +839,18 @@
       (n ? '<a class="btn primary" href="https://wa.me/' + n + '" target="_blank" rel="noopener">Apri la chat WhatsApp</a>' : '') + '<button class="btn" data-inv-fatto="' + esc(inv.id) + '">Segna come inviato</button>') + '</div>';
     return h;
   }
-  // promemoria del lunedì: resta finché le quote della settimana non sono state inviate
+  // invio delle quote da pagare, disponibile in qualsiasi momento in Incassa e in Corsi
   function bannerInvii() {
-    const lun = lunediDi(oggi());
-    const da = invii().filter((x) => corsiInvio(x).length && numeroTel(x.tel) && (x.ultimo || '') < lun);
+    const da = invii().filter((x) => corsiInvio(x).length && numeroTel(x.tel));
     if (!da.length) return '';
-    return '<div class="panel pad inv-banner"><div><b>Quote da pagare: invio del lunedì</b><div class="small muted">Tabelle con le quote non pagate fino a ' + esc(meseNome(meseCorrente())) + ', da mandare su WhatsApp.</div></div>' +
-      '<div class="row">' + da.map((x) => '<button class="btn primary" data-inv-invia="' + esc(x.id) + '">' + ICONA_MSG + esc(x.nome) + '</button>').join('') +
-      '<button class="btn ghost sm" data-act="inv-salta" title="Nasconde il promemoria fino a lunedì prossimo">Non questa settimana</button></div></div>';
+    return '<div class="panel pad inv-banner"><div><b>Quote da pagare su WhatsApp</b><div class="small muted">Tabelle con le quote non pagate fino a ' + esc(meseNome(meseCorrente())) + ', con i dati aggiornati al momento dell’invio.</div></div>' +
+      '<div class="row">' + da.map((x) => '<button class="btn primary" data-inv-invia="' + esc(x.id) + '" title="' + esc(testoUltimo(x.ultimo)) + '">' + ICONA_MSG + esc(x.nome) + '</button>').join('') + '</div></div>';
   }
   function inviiHtml() {
     const lista = invii();
     const cs = corsi().filter((c) => c.attivo !== false);
     let h = '<div class="panel pad stack"><h2 class="sez">Quote da pagare su WhatsApp</h2>' +
-      '<p class="small muted" style="margin:0">Per ogni destinatario, una tabella JPEG per corso (sfondo bianco, da stampare) con le sole quote non pagate fino al mese in corso. Ogni lunedì, finché non le invii, in Incassa e in Corsi compare il promemoria: un tocco apre la condivisione, scegli WhatsApp e il contatto. Queste impostazioni valgono solo per questo dispositivo.</p>';
+      '<p class="small muted" style="margin:0">Per ogni destinatario, una tabella JPEG per corso (sfondo bianco, da stampare) con le sole quote non pagate fino al mese in corso. Si inviano quando vuoi, dai pulsanti in Incassa e in Corsi o da «Invia ora» qui sotto: l’app legge prima i pagamenti aggiornati dal Foglio Google, poi apre la condivisione; scegli WhatsApp e il contatto. Queste impostazioni valgono solo per questo dispositivo.</p>';
     if (!lista.length) return h + '<div><button class="btn primary" data-act="inv-numeri">Inserisci i numeri WhatsApp</button></div></div>';
     h += '<div class="inv-numeri">' + RUOLI.map(([r, e]) => { const x = invioRuolo(r); return '<div><span class="small muted">' + esc(e) + '</span><b>' + esc((x && x.tel) || 'nessun numero') + '</b></div>'; }).join('') +
       '<button class="btn sm" data-act="inv-numeri">Cambia i numeri</button></div>';
@@ -837,7 +861,7 @@
         '<div><div class="small muted" style="margin-bottom:6px">Corsi (una tabella per corso)</div><div class="inv-corsi">' + cs.map((c) => '<button class="inv-chip' + ((x.corsi || []).includes(c.id) ? ' on' : '') + '" data-inv-corso="' + esc(x.id + '|' + c.id) + '" aria-pressed="' + (x.corsi || []).includes(c.id) + '">' + esc(c.nome) + '</button>').join('') + '</div></div>' +
         (x.tel && !numeroTel(x.tel) ? '<div class="msg err">Il numero non sembra valido.</div>' : '') +
         '<div class="row" style="align-items:center"><button class="btn sm" data-inv-anteprima="' + esc(x.id) + '">Anteprima</button><button class="btn sm primary" data-inv-invia="' + esc(x.id) + '">Invia ora</button><button class="btn sm ghost" data-inv-del="' + esc(x.id) + '">Elimina</button>' +
-        '<span class="small muted">' + (x.ultimo ? 'Inviato la settimana del ' + esc(fmtData(x.ultimo)) : 'Mai inviato') + '</span></div></div>';
+        '<span class="small muted">' + esc(testoUltimo(x.ultimo)) + '</span></div></div>';
     });
     return h + '<div><button class="btn sm" data-act="inv-nuovo">+ Nuovo destinatario</button></div></div>';
   }
@@ -928,10 +952,52 @@
     if (altri.length) h += '<div class="seg" style="margin-top:6px">' + altri.map((c) => '<button type="button" data-corso-sc="' + esc(c.id) + '" class="' + (v.corsi[c.id] ? 'on' : '') + '" aria-pressed="' + !!v.corsi[c.id] + '">' + (so ? '+ ' : '') + esc(c.nome) + '</button>').join('') + '</div>';
     h += '</div><label class="field"><span>Note</span><textarea class="in" data-v="note">' + esc(v.note) + '</textarea></label>';
     if (so) h += '<label class="small" style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-v="attivo"' + (v.attivo ? ' checked' : '') + '> Socio attivo</label>';
+    if (so && isc.length && (so.attivo !== false) !== !!v.attivo) h += cambioAttivoHtml(v, !v.attivo);
     if (so) h += togliSocioHtml(so, isc);
     if (d.err) h += '<div class="msg err">' + esc(d.err) + '</div>';
     h += '<div class="azioni"><button class="btn ghost" data-act="chiudi">Annulla</button>' + (so ? '<button class="btn" data-act="socio-incassa">Incassa</button>' : '') + '<button class="btn primary" data-act="salva-socio">' + (so ? 'Salva' : d.perIncasso ? 'Crea e continua' : 'Crea il socio') + '</button></div>';
     return h;
+  }
+  // tolta o rimessa la spunta «Socio attivo»: da quale mese le quote non si chiedono più (o tornano a essere chieste)
+  const meseDefault = () => { const mesi = mesiEs(S.es), ora = meseCorrente(); return mesi.includes(ora) ? ora : ora < mesi[0] ? mesi[0] : mesi[mesi.length - 1]; };
+  function cambioAttivoHtml(v, toglie) {
+    const mesi = mesiEs(S.es);
+    const da = v.attivoDa || meseDefault();
+    return '<div class="msg" style="margin:0"><div class="row" style="align-items:end;gap:10px"><label class="field" style="flex:1 1 170px;margin:0"><span>' + (toglie ? 'Quote non più chieste da' : 'Quote di nuovo da chiedere da') + '</span><select class="in" data-v="attivoDa">' +
+      mesi.map((ym) => '<option value="' + ym + '"' + (ym === da ? ' selected' : '') + '>' + esc(meseNome(ym)) + '</option>').join('') + '</select></label></div>' +
+      '<p class="small" style="margin:6px 0 0">' + (toglie ? 'Salvando, i mesi non pagati di tutti i suoi corsi del ' + esc(S.es) + ', da questo mese in poi, diventano grigi (da non incassare): non sono più chiesti, né qui né nel Bilancio. I pagamenti fatti restano.' :
+        'Salvando, i mesi grigi senza importo dei suoi corsi del ' + esc(S.es) + ', da questo mese in poi, tornano da incassare.') + '</p></div>';
+  }
+  // mesi non pagati da «da» in poi → grigi; restituisce le righe di prima (per «Annulla») e quanti mesi
+  function grigiDa(sid, da) {
+    const st = situazione(sid);
+    const prima = [];
+    let n = 0;
+    iscrizioniSocio(sid).forEach((i) => {
+      const nd = nonDovuti(i), imp = importiNonDovuti(i);
+      const nuovi = mesiCorso(corso(i.corso)).filter((ym) => ym >= da && !st.cell.has(i.corso + '|' + ym) && !nd.has(ym));
+      if (!nuovi.length) return;
+      prima.push({ t: 'iscrizioni', r: { ...i } });
+      nuovi.forEach((ym) => nd.add(ym));
+      n += nuovi.length;
+      scrivi('iscrizioni', { ...i, nonDovuti: testoNonDovuti(nd, imp) });
+    });
+    return { prima, n };
+  }
+  // mesi grigi senza importo da «da» in poi → di nuovo da incassare
+  function togliGrigiDa(sid, da) {
+    const prima = [];
+    let n = 0;
+    iscrizioniSocio(sid).forEach((i) => {
+      const nd = nonDovuti(i), imp = importiNonDovuti(i);
+      const via = Array.from(nd).filter((k) => k !== 'I' && k >= da && !imp.has(k));
+      if (!via.length) return;
+      prima.push({ t: 'iscrizioni', r: { ...i } });
+      via.forEach((k) => nd.delete(k));
+      n += via.length;
+      scrivi('iscrizioni', { ...i, nonDovuti: testoNonDovuti(nd, imp) });
+    });
+    return { prima, n };
   }
   // togliere un socio: «ha smesso» (i mesi da un certo mese in poi diventano da non incassare, i pagamenti restano)
   // oppure eliminarlo dall'app, solo se non ha nessun pagamento (inserito per errore, doppio, mai venuto)
@@ -956,18 +1022,9 @@
     const { sid } = S.dialog;
     const so = socio(sid);
     const da = ($('#sm-mese') && $('#sm-mese').value) || meseCorrente();
-    const st = situazione(sid);
-    const prima = [{ t: 'soci', r: { ...so } }];
-    let n = 0;
-    iscrizioniSocio(sid).forEach((i) => {
-      const nd = nonDovuti(i), imp = importiNonDovuti(i);
-      const nuovi = mesiCorso(corso(i.corso)).filter((ym) => ym >= da && !st.cell.has(i.corso + '|' + ym) && !nd.has(ym));
-      if (!nuovi.length) return;
-      prima.push({ t: 'iscrizioni', r: { ...i } });
-      nuovi.forEach((ym) => nd.add(ym));
-      n += nuovi.length;
-      scrivi('iscrizioni', { ...i, nonDovuti: testoNonDovuti(nd, imp) });
-    });
+    const g = grigiDa(sid, da);
+    const prima = [{ t: 'soci', r: { ...so } }].concat(g.prima);
+    const n = g.n;
     scrivi('soci', { ...so, attivo: false });
     S.dialog = null; fatto();
     toast(so.nominativo + ': ' + (n ? n + (n === 1 ? ' mese' : ' mesi') + ' da ' + meseNome(da) + ' in poi da non incassare' : 'nessun mese da cambiare') + ', socio non attivo.', '', { label: 'Annulla', fn: () => { prima.forEach((x) => scrivi(x.t, x.r)); fatto(); toast('Annullato.'); } });
@@ -997,6 +1054,7 @@
     const dup = vivi('soci').find((x) => norm(x.nominativo) === norm(nominativo) && (!so || x.id !== so.id));
     if (dup && !d.dupOk) { d.err = 'C’è già un socio «' + dup.nominativo + '». Premi di nuovo per crearne comunque un altro.'; d.dupOk = true; renderDialog(); return; }
     const now = adesso();
+    const primaSo = so ? { ...so } : null;
     const rec = scrivi('soci', {
       ...(so || { id: uid('s'), creato: now, eliminato: false }),
       nominativo, cognome: so && !so.cognome ? null : v.cognome.trim(), nome: so && !so.cognome ? null : v.nome.trim(),
@@ -1010,11 +1068,20 @@
       const i = S.dati.iscrizioni[iid];
       if (i) scrivi('iscrizioni', { ...i, quota: numIn(d.quote[iid]) });
     });
+    // spunta «Socio attivo» tolta: da quel mese le quote non si chiedono più (mesi grigi, passano al Bilancio); rimessa: tornano
+    let cambio = null;
+    if (so && (so.attivo !== false) !== !!v.attivo && iscrizioniSocio(so.id).length) {
+      const da = v.attivoDa || meseDefault();
+      const g = v.attivo ? togliGrigiDa(so.id, da) : grigiDa(so.id, da);
+      cambio = { da, n: g.n, prima: [{ t: 'soci', r: primaSo }].concat(g.prima), toglie: !v.attivo };
+    }
     const perIncasso = d.perIncasso;
     S.dialog = null;
     if (perIncasso) { scegliSocio(rec.id, null, true); S.view = 'incassa'; if (location.hash !== '#incassa') location.hash = 'incassa'; }
     fatto();
-    toast(so ? 'Socio aggiornato.' : 'Creato ' + nominativo + '.');
+    if (cambio) toast(nominativo + (cambio.toglie ? ' non attivo: ' + (cambio.n ? cambio.n + (cambio.n === 1 ? ' mese' : ' mesi') + ' da ' + meseNome(cambio.da) + ' in poi da non incassare.' : 'nessun mese da cambiare.') : ' di nuovo attivo: ' + (cambio.n ? cambio.n + (cambio.n === 1 ? ' mese' : ' mesi') + ' da ' + meseNome(cambio.da) + ' in poi di nuovo da incassare.' : 'nessun mese grigio da cambiare.')),
+      '', { label: 'Annulla', fn: () => { cambio.prima.forEach((x) => scrivi(x.t, x.r)); fatto(); toast('Annullato.'); } });
+    else toast(so ? 'Socio aggiornato.' : 'Creato ' + nominativo + '.');
   }
 
   function dlgIscrivi() {
@@ -1316,7 +1383,6 @@
       if (act === 'inv-numeri') { apri({ tipo: 'numeri', v: {} }); return; }
       if (act === 'numeri-salva') { salvaNumeri(); return; }
       if (act === 'inv-nuovo') { S.conf.invii = invii().concat([{ id: uid('w'), nome: 'Destinatario', tel: '', corsi: [], ultimo: null }]); salva(); render(); return; }
-      if (act === 'inv-salta') { const lun = lunediDi(oggi()); invii().forEach((x) => { if ((x.ultimo || '') < lun) x.ultimo = lun; }); salva(); render(); toast('Promemoria nascosto fino a lunedì prossimo.'); return; }
       if (ds.invInvia) { inviaQuote(ds.invInvia); return; }
       if (ds.invAnteprima) { anteprimaQuote(ds.invAnteprima); return; }
       if (ds.invCondividi) {
@@ -1327,7 +1393,7 @@
           .catch((e) => { if (!e || e.name !== 'AbortError') toast('Condivisione non riuscita: scarica le immagini e allegale in WhatsApp.', 'err'); });
         return;
       }
-      if (ds.invFatto) { const inv = invio(ds.invFatto); if (inv) { chiudi(); segnaInviato(inv); toast('Segnato come inviato per questa settimana.'); } return; }
+      if (ds.invFatto) { const inv = invio(ds.invFatto); if (inv) { chiudi(); segnaInviato(inv); toast('Segnato come inviato.'); } return; }
       if (ds.invScarica !== undefined && S.dialog && S.dialog.imm) {
         const x = S.dialog.imm[Number(ds.invScarica)];
         const a = document.createElement('a'); a.href = S.dialog.url[Number(ds.invScarica)]; a.download = x.nome; document.body.appendChild(a); a.click(); a.remove();
@@ -1415,7 +1481,7 @@
       if (t.dataset.quota !== undefined) { const q = numIn(t.value); if (q != null) S.F.quote[t.dataset.quota] = q; render(); return; }
       if (t.dataset.impIscr !== undefined) { const q = numIn(t.value); if (q != null) S.F.impIscr = q; render(); return; }
       if (t.dataset.ricorda !== undefined) { S.F.ricorda[t.dataset.ricorda] = t.checked; return; }
-      if (t.dataset.v !== undefined && S.dialog && S.dialog.v) { S.dialog.v[t.dataset.v] = t.type === 'checkbox' ? t.checked : t.value; return; }
+      if (t.dataset.v !== undefined && S.dialog && S.dialog.v) { S.dialog.v[t.dataset.v] = t.type === 'checkbox' ? t.checked : t.value; if (t.dataset.v === 'attivo' && S.dialog.tipo === 'socio') renderDialog(); return; }
       if (t.dataset.inv) { const [iid, k] = t.dataset.inv.split('|'); const inv = invio(iid); if (inv) { inv[k] = t.value.trim() || (k === 'nome' ? 'Destinatario' : ''); salva(); render(); } return; }
       if (t.id === 'imp-xlsx' && t.files && t.files[0]) { const f = t.files[0]; t.value = ''; leggiExcel(f).catch((e) => toast(e.message || 'Il file non si legge.', 'err')); }
     });

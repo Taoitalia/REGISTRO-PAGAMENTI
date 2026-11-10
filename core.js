@@ -1143,13 +1143,23 @@
       const e = get(y.n);
       (Array.isArray(y.m) ? y.m : []).forEach((ym) => { e.mesi.add(ym); e.manuali.add(ym); });
     });
+    // soci esclusi dall'associazione (non più interessati): niente più da incassare nell'esercizio
+    const tutti = mesiEsercizio(s);
+    esclusiEsercizio(s).forEach((y) => {
+      const e = get(y.n);
+      tutti.forEach((ym) => { e.mesi.add(ym); e.manuali.add(ym); });
+      e.assoc = true; e.escluso = y.data || true; e.esclusoId = y.id || null;
+    });
     return map;
   }
+  // soci non più considerati nell'esercizio: segnati «da escludere» oppure con la data di recesso nel libro
+  // { id (riga del libro), n (nome nel Libro Giornale), reg (nomi nel registro pagamenti), data, recesso }
+  const esclusiEsercizio = (s) => ((s && s.registro && Array.isArray(s.registro.esclusi)) ? s.registro.esclusi : []).filter((y) => y && y.n);
   const NI_VUOTO = { mesi: new Set(), grigi: new Set(), manuali: new Set(), assoc: false, fino: null };
   const niCache = new WeakMap();
   function nonIncassareSocio(s, nome) {
     const src = s && s.registro;
-    if (!src || typeof src !== 'object' || !nome || (!src.nonIncassare && !src.nonIncassareManuale)) return NI_VUOTO;
+    if (!src || typeof src !== 'object' || !nome || (!src.nonIncassare && !src.nonIncassareManuale && !src.esclusi)) return NI_VUOTO;
     if (!niCache.has(src)) niCache.set(src, nonIncassareSalvati(s));
     return niCache.get(src).get(chiaveSocio(nome)) || NI_VUOTO;
   }
@@ -1836,44 +1846,47 @@
     const B = { bold: true };
     let h = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 148" width="' + (o.width || '210mm') + '" height="' + (o.height || '148mm') + '">' +
       '<rect x="0" y="0" width="210" height="148" fill="#fff"/>';
-    if (e.logo) h += '<image href="' + e.logo + '" x="19" y="9.5" width="26" height="34.5" preserveAspectRatio="xMidYMid meet"/>';
-    e.intestazione.forEach((t, i) => { h += txt(120, 21.3 + i * 4.1, t, 8); });
-    h += txt(152.2, 55.6, 'RICEVUTA n.', 14, { anchor: 'end' });
-    h += '<rect x="154" y="50.5" width="39" height="6.4" fill="none" stroke="#000" stroke-width="0.35"/>';
-    h += txt(173.5, 55.6, r.numeroEtichetta || '', 14, { anchor: 'middle', bold: true, max: 37 });
-    h += txt(152.6, 65.2, '€', 14, { anchor: 'end' });
-    h += '<rect x="154" y="60.2" width="39" height="6.4" fill="none" stroke="#000" stroke-width="0.35"/>';
-    h += txt(173.5, 65.3, isNum(r.importo) && num(r.importo) ? fmt(r.importo) : '', 14, { anchor: 'middle', bold: true, max: 37 });
-    h += txt(19.1, 73.4, 'Si dichiara di aver ricevuto da', 10);
-    h += txt(68.3, 73.4, r.pagatore, 10, { bold: true, max: 55 });
-    h += txt(142.7, 73.4, 'Codice fiscale', 10, { anchor: 'end' });
-    h += txt(143.4, 73.4, r.cf, 10, { bold: true, max: 50 });
-    h += txt(19.1, 79.9, 'la somma di', 10);
-    h += txt(42.2, 79.9, '€', 10);
-    h += txt(49, 79.9, isNum(r.importo) && num(r.importo) ? numeroInLettere(r.importo) : '', 10, { bold: true, max: 140 });
-    h += txt(19.1, 86.3, 'per', 10);
-    h += txt(25, 86.3, r.causale, 10, { bold: true, max: 168 });
-    h += txt(19.1, 92.8, 'Periodo dal', 10);
-    h += txt(37.7, 92.8, data(r.dal), 10, { bold: true });
-    h += txt(119.4, 92.8, 'al', 10, { anchor: 'end' });
-    h += txt(120.6, 92.8, data(r.al), 10, { bold: true });
-    h += txt(19.1, 99.3, 'Disciplina praticata', 10);
-    h += txt(49, 99.3, r.disciplina, 10, { bold: true, max: 140 });
-    h += txt(19.1, 106.5, 'Cognome e nome minore', 10);
-    h += txt(61, 106.5, r.minore, 10, { bold: true, max: 130 });
-    h += txt(19.1, 110.6, 'nato a', 10);
-    h += txt(37.7, 110.6, r.natoA, 10, { bold: true, max: 108 });
-    h += txt(152.3, 110.6, 'il', 10, { anchor: 'end' });
-    h += txt(154, 110.6, data(r.natoIl), 10, { bold: true });
-    h += txt(19.1, 114.7, 'residente a', 10);
-    h += txt(37.7, 114.7, r.residenza, 10, { bold: true, max: 155 });
-    const yPiede = [120.6, 124.5, 127.3];
-    e.piede.forEach((t, i) => { h += txt(19.1, yPiede[i] || 127.3 + (i - 2) * 2.8, t, 8, { font: ARIAL, max: 100 }); });
-    if (e.firma) h += '<image href="' + e.firma + '" x="124.5" y="118.8" width="47" height="10.3" preserveAspectRatio="xMidYMid meet" opacity="0.92"/>';
-    e.timbro.forEach((t, i) => { h += txt(146, 119.3 + i * 3.25, t, i ? 8 : 9, { anchor: 'middle', font: SERIF, bold: i === 0, max: 50 }); });
-    h += txt(19.1, 135.6, (e.citta || '') + ', lì', 10);
-    h += txt(58.3, 135.6, data(r.data), 10, { anchor: 'middle' });
-    h += txt(83.8, 135.6, 'Firma', 10);
+    // posizioni (mm) misurate sulla stampa della maschera Excel su A5 orizzontale («MASCHERA RICEVUTA.xlsm»)
+    if (e.logo) h += '<image href="' + e.logo + '" x="10.6" y="9.9" width="32.5" height="35.3" preserveAspectRatio="xMidYMid meet"/>';
+    e.intestazione.forEach((t, i) => { h += txt(121.75, 20.4 + i * 3.34, t, 8); });
+    const box = (y) => '<rect x="157.1" y="' + y + '" width="42.2" height="6.2" fill="none" stroke="#000" stroke-width="0.65"/>';
+    h += txt(156.26, 49.4, 'RICEVUTA n.', 14, { anchor: 'end' });
+    h += box(44.85);
+    h += txt(178.2, 49.4, r.numeroEtichetta || '', 14, { anchor: 'middle', bold: true, max: 40 });
+    h += txt(156.3, 59.4, '€', 14, { anchor: 'end' });
+    h += box(54.75);
+    h += txt(178.2, 59.4, isNum(r.importo) && num(r.importo) ? fmt(r.importo) : '', 14, { anchor: 'middle', bold: true, max: 40 });
+    const X = 11.09;
+    h += txt(X, 67.6, 'Si dichiara di aver ricevuto da', 10);
+    h += txt(64.94, 67.6, r.pagatore, 10, { bold: true, max: 60 });
+    h += txt(126.75, 67.6, 'Codice fiscale', 10);
+    h += txt(146.8, 67.6, r.cf, 10, { bold: true, max: 52 });
+    h += txt(X, 74.4, 'la somma di', 10);
+    h += txt(36.2, 74.4, '€', 10);
+    h += txt(43.7, 74.4, isNum(r.importo) && num(r.importo) ? numeroInLettere(r.importo) : '', 10, { bold: true, max: 154 });
+    h += txt(X, 81.6, 'per', 10);
+    h += txt(17.5, 81.6, r.causale, 10, { bold: true, max: 181 });
+    h += txt(X, 88.4, 'Periodo dal', 10);
+    h += txt(31.41, 88.4, data(r.dal), 10, { bold: true });
+    h += txt(118.07, 88.4, 'al', 10);
+    h += txt(121.9, 88.4, data(r.al), 10, { bold: true });
+    h += txt(X, 95.4, 'Disciplina praticata', 10);
+    h += txt(43.7, 95.4, r.disciplina, 10, { bold: true, max: 154 });
+    h += txt(X, 103.3, 'Cognome e nome minore', 10);
+    h += txt(64.94, 103.3, r.minore, 10, { bold: true, max: 133 });
+    h += txt(X, 107.8, 'nato a', 10);
+    h += txt(31.41, 107.8, r.natoA, 10, { bold: true, max: 120 });
+    h += txt(154.9, 107.8, 'il', 10);
+    h += txt(157.73, 107.8, data(r.natoIl), 10, { bold: true });
+    h += txt(X, 112.4, 'residente a', 10);
+    h += txt(31.41, 112.4, r.residenza, 10, { bold: true, max: 166 });
+    const yPiede = [118.9, 122.2, 125.8];
+    e.piede.forEach((t, i) => { h += txt(11.05, yPiede[i] || 125.8 + (i - 2) * 3.4, t, 8, { font: ARIAL, max: 110 }); });
+    if (e.firma) h += '<image href="' + e.firma + '" x="124.5" y="122.4" width="51.2" height="10.2" preserveAspectRatio="xMidYMid meet" opacity="0.92"/>';
+    e.timbro.forEach((t, i) => { h += txt(150.3, [125.1, 128.9, 132.3][i] || 132.3 + (i - 2) * 3.4, t, i ? 8 : 9, { anchor: 'middle', font: SERIF, bold: i === 0, max: 54 }); });
+    h += txt(X, 134.6, (e.citta || '') + ', lì', 10);
+    h += txt(53.9, 134.6, data(r.data), 10, { anchor: 'middle' });
+    h += txt(82.3, 134.6, 'Firma', 10);
     return h + '</svg>';
   }
 
@@ -1936,6 +1949,21 @@
     const set = new Set((corsi || []).map(enteCorso));
     return ENTI.filter((x) => set.has(x));
   }
+  // disciplina della ricevuta dai corsi: basket = pallacanestro, tai chi = tai chi chuan, gli altri = kung fu;
+  // chi frequenta basket e kung fu ha «KUNG FU E PALLACANESTRO». Le parole sono quelle delle impostazioni.
+  function disciplinaDaCorsi(corsi, ente) {
+    const lista = ente && Array.isArray(ente.discipline) && ente.discipline.length ? ente.discipline : enteDefault().discipline;
+    const trova = (rx, def) => lista.find((d) => rx.test(d)) || def;
+    const set = new Set();
+    (corsi || []).forEach((c) => { if (!clean(c)) return; set.add(isBasket(c) ? 'B' : /tai\s*chi/i.test(c) ? 'T' : 'K'); });
+    const out = [];
+    if (set.has('K')) out.push(trova(/kung/i, 'KUNG FU'));
+    if (set.has('T')) out.push(trova(/tai/i, 'TAI CHI CHUAN'));
+    if (set.has('B')) out.push(trova(/pallacanestro|basket/i, 'PALLACANESTRO'));
+    return out.length > 1 ? out.slice(0, -1).join(', ') + ' E ' + out[out.length - 1] : out[0] || '';
+  }
+  // corsi segnati nel libro soci: basket (un corso) e, con «kungfu», anche kung fu / tai chi
+  const corsiLibro = (e) => (e && e.basket ? [e.basket].concat(e.kungfu ? ['kung fu'] : []) : []);
   const csCache = new WeakMap();
   // attuali = solo i corsi che il socio frequenta ora (se il registro li distingue)
   function corsiSocio(s, nome, attuali) {
@@ -2056,13 +2084,17 @@
     const parsedJ = sociJ.map((x) => ({ x, p: parseNome(x.nome) }));
     const anag = c.anag || [];
     const lista = (libro || []).filter((e) => e && e.id);
+    // soci segnati «da escludere» (in attesa della delibera): le quote non pagate non si segnalano
+    const escl = new Set(esclusiEsercizio(s).map((y) => y.id).filter(Boolean));
     // nome nel Libro Giornale: quello scelto a mano, altrimenti l'unico che corrisponde (prima i soci attivi)
     const presi = new Map();
     lista.forEach((e) => { if (e.contabilita) presi.set(chiaveSocio(e.contabilita), e.id); });
     const auto = new Map();
-    const ordine = lista.slice().sort((a, b) => (a.dataRecesso ? 1 : 0) - (b.dataRecesso ? 1 : 0) || num(b.n) - num(a.n));
+    // nuovo socio in attesa: se nel Libro Giornale il nome scritto non c'è, si cerca il suo pagamento per nome
+    const daCercare = (e) => !e.contabilita || (e.inAttesa && c.soci && !c.soci.has(chiaveSocio(e.contabilita)));
+    const ordine = lista.slice().sort((a, b) => (a.dataRecesso ? 1 : 0) - (b.dataRecesso ? 1 : 0) || (a.inAttesa ? 1 : 0) - (b.inAttesa ? 1 : 0) || num(b.n) - num(a.n));
     ordine.forEach((e) => {
-      if (e.contabilita) return;
+      if (!daCercare(e)) return;
       const R = parseNome(e.nome + ' ' + e.cognome);
       let best = [], top = 0;
       parsedJ.forEach(({ x, p }) => { const sc = punteggioNome(R, p); if (sc > top) { top = sc; best = [x]; } else if (sc && sc === top) best.push(x); });
@@ -2075,7 +2107,7 @@
     lista.forEach((e) => { if (e.cf) { if (!perCF.has(e.cf)) perCF.set(e.cf, []); perCF.get(e.cf).push(e.id); } });
     return lista.map((e) => {
       const nominativo = clean(e.cognome + ' ' + e.nome);
-      const contabilita = e.contabilita || auto.get(e.id) || null;
+      const contabilita = (daCercare(e) && auto.get(e.id)) || e.contabilita || null;
       const so = contabilita && c.soci ? c.soci.get(chiaveSocio(contabilita)) : null;
       // anagrafica delle ricevute
       let a = e.anagId ? anag.find((x) => x.id === e.anagId) : null;
@@ -2089,6 +2121,7 @@
       let iscr = 'da pagare', iscrData = null, iscrFonte = null;
       if (assoc) { iscr = 'pagata'; iscrData = assoc.data; iscrFonte = 'contabilità, op. n. ' + assoc.n; }
       else if (e.ultimoPagamento && e.ultimoPagamento >= s.inizio) { iscr = 'pagata'; iscrData = e.ultimoPagamento; iscrFonte = 'libro soci'; }
+      else if (escl.has(e.id)) { iscr = 'da escludere'; iscrFonte = 'in attesa della delibera di esclusione'; }
       else if (ni && ni.assoc && e.ultimoPagamento && e.ultimoPagamento >= addMonths(s.inizio.slice(0, 7), -3) + '-01') { iscr = 'pagata'; iscrData = e.ultimoPagamento; iscrFonte = 'pagata prima dell’inizio dell’anno (grigia nel registro pagamenti)'; }
       else if (ni && ni.assoc) { iscr = 'non dovuta'; iscrFonte = 'grigia nel registro pagamenti'; }
       const ultimo = [e.ultimoPagamento, assoc ? assoc.data : null].filter(Boolean).sort().pop() || null;
@@ -2100,7 +2133,13 @@
       const st = (e.stagioni && e.stagioni[s.es]) || {};
       // corsi: dal registro pagamenti e, per il basket, dalla lettera del libro; da lì gli enti
       const daRegistro = corsiSocio(s, contabilita, true);
-      const corsi = daRegistro.length ? daRegistro.slice() : (e.basket ? [e.basket] : []);
+      const corsi = daRegistro.length ? daRegistro.slice() : corsiLibro(e);
+      // segnato a mano nel libro: basket e kung fu insieme, anche se il registro ne conosce uno solo
+      if (e.basket && e.kungfu) {
+        if (!corsi.some(isBasket)) corsi.push(e.basket);
+        if (!corsi.some((c) => !isBasket(c))) corsi.push('kung fu');
+      }
+      const entrambi = corsi.some(isBasket) && corsi.some((c) => !isBasket(c));
       let enti = entiDaCorsi(corsi);
       if (!enti.length) enti = ['UISP'];
       const tess = {}, piatt = {};
@@ -2109,11 +2148,11 @@
       if (st.tesserato && !ENTI.some((en) => ('tess_' + en) in st)) enti.forEach((en) => { tess[en] = true; });
       if (st.piattaforma && !ENTI.some((en) => ('piatt_' + en) in st)) enti.forEach((en) => { piatt[en] = true; });
       return {
-        e, id: e.id, nominativo, attivo, contabilita, contabilitaAuto: !e.contabilita && !!contabilita, anag: a,
+        e, id: e.id, nominativo, attivo, inAttesa: !!e.inAttesa, daEscludere: escl.has(e.id), contabilita, contabilitaAuto: !!contabilita && contabilita !== e.contabilita, anag: a,
         iscr, iscrData, iscrFonte, ultimo, aggiornaData: !!(assoc && e.ultimoPagamento !== assoc.data), // la data giusta è quella del Libro Giornale
         nascita, eta: nascita ? eta(nascita, oggi) : null, minore: minoreOggi, minoreIscr, genitore,
         mancaGenitore: attivo && minoreIscr && !(genitore && (genitore.cf || '').length === 16),
-        corsi, enti, tess, piatt,
+        corsi, entrambi, enti, tess, piatt,
         tesserato: enti.every((en) => tess[en]), piattaforma: enti.every((en) => piatt[en]),
         storia: e.cf && perCF.get(e.cf) && perCF.get(e.cf).length > 1 ? perCF.get(e.cf).filter((id) => id !== e.id) : []
       };
@@ -2726,8 +2765,10 @@
       const op = it.match && it.match.op;
       if (!op || !it.nome || !it.foglio) return;
       const k = chiaveSocio(it.nome);
-      const x = ((out[op.id] = out[op.id] || {})[k] = (out[op.id] || {})[k] || { mesi: 0, ac: 0, corsi: [] });
+      const x = ((out[op.id] = out[op.id] || {})[k] = (out[op.id] || {})[k] || { mesi: 0, ac: 0, corsi: [], mc: [] });
       if (!x.corsi.includes(it.foglio)) x.corsi.push(it.foglio);
+      // corsi dei mesi pagati (senza l'iscrizione): servono alla disciplina della ricevuta
+      if (it.voce === 'mese' && !x.mc.includes(it.foglio)) x.mc.push(it.foglio);
       const imp = isNum(it.importo) ? Number(it.importo) : (it.voce === 'mese' ? quotaCorsoSalvata(s, it.foglio) : qAss);
       if (it.voce === 'mese' && isBasket(it.foglio)) x.mesi = r2(x.mesi + imp);
       if (isAcqui(it.foglio)) x.ac = r2(x.ac + imp);
@@ -2963,8 +3004,14 @@
       if (p.voce === 'assoc') x.assocPagata = true; else if (p.mese) x.pagati.add(p.foglio + '|' + p.mese);
     });
     const out = [], contabili = [];
+    // soci esclusi dall'associazione: le loro quote non pagate non si segnalano più
+    const escl = esclusiEsercizio(s);
+    const esclN = new Set(escl.map((y) => chiaveSocio(y.n)));
+    const ordinate = (n) => normNome(n).split(' ').filter(Boolean).sort().join(' ');
+    const esclR = new Set(escl.reduce((a, y) => a.concat(Array.isArray(y.reg) ? y.reg : []), []).map(ordinate));
     persone.forEach((x) => {
       if (!x.isc.length) return;
+      const escluso = esclR.has(ordinate(x.nomeReg)) || (x.nome && esclN.has(chiaveSocio(x.nome)));
       const so = x.nome ? soci.get(chiaveSocio(x.nome)) : null;
       const quota = (r) => (isNum(r.quota) ? Number(r.quota) : quotaFoglio(r.foglio));
       const corsiSocio = Array.from(new Set(x.isc.map((r) => r.foglio)));
@@ -2989,7 +3036,7 @@
         }
         if (ym <= ora) aperti.forEach((r) => voci.push({ voce: 'mese', foglio: r.foglio, mese: ym, importo: quota(r), corrente: ym === ora }));
       });
-      if (!voci.length) return;
+      if (!voci.length || escluso) return;
       out.push({ key: x.key, nomeReg: x.nomeReg, nome: x.nome, corsi: corsiSocio, voci, totale: r2(voci.reduce((t, v) => t + v.importo, 0)) });
     });
     out.sort((a, b) => a.nomeReg.localeCompare(b.nomeReg, 'it'));
@@ -3027,6 +3074,331 @@
     ((c && c.fogli) || []).forEach((f) => { if (isNum(f.quota)) quoteCorsi[f.nome] = Number(f.quota); });
     return { L: { fogli: (c && c.fogli) || [], righe: (c && c.righe) || [], pagamenti, saltati: [] }, nomi: (c && c.nomi) || {}, quoteCorsi };
   }
+  // ---------------------------------------------------------------- verifica dell'estratto conto bancario
+  // Estratto conto (righe del foglio Excel della banca) → movimenti { data, valuta, desc, importo, caus, agg }.
+  // Le colonne si riconoscono dai titoli: Data (operazione), Valuta, Descrizione, Importo/EUR oppure Dare e Avere.
+  function dataEstratto(v) {
+    if (typeof v === 'number' && v > 20000 && v < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000); return d.toISOString().slice(0, 10); }
+    if (v instanceof Date && !isNaN(v)) return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0');
+    const t = clean(v);
+    let m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/.exec(t);
+    if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'); }
+    m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+    return m ? m[1] + '-' + m[2] + '-' + m[3] : null;
+  }
+  function importoEstratto(v) {
+    if (typeof v === 'number') return r2(v);
+    const t = clean(v).replace(/[€\s]/g, '');
+    if (!t) return null;
+    const n = /,\d{1,2}$/.test(t) ? Number(t.replace(/\./g, '').replace(',', '.')) : Number(t.replace(/,/g, ''));
+    return isFinite(n) ? r2(n) : null;
+  }
+  const aggregatore = (desc) => (/sum\s*up/i.test(desc) ? 'SumUp' : /paypal/i.test(desc) ? 'PayPal' : null);
+  function leggiEstratto(righe, nomeFile) {
+    const rows = (righe || []).map((r) => (Array.isArray(r) ? r : []));
+    const txt = (v) => clean(v == null ? '' : v).toLowerCase();
+    let h = -1;
+    for (let i = 0; i < Math.min(rows.length, 30) && h < 0; i++) {
+      const c = rows[i].map(txt);
+      if (c.some((x) => /^data/.test(x)) && c.some((x) => /descri|dettaglio|causale descr/.test(x))) h = i;
+    }
+    if (h < 0) throw new Error('Nel file non trovo la riga dei titoli con «Data» e «Descrizione».');
+    // i titoli possono stare su due righe (Data operaz. / Valuta)
+    const tit = rows[h].map(txt).map((x, j) => (x + ' ' + txt((rows[h + 1] || [])[j])).trim());
+    const col = (rx, escl) => tit.findIndex((x, j) => rx.test(x) && !(escl || []).includes(j));
+    const cData = col(/^data/);
+    let cVal = col(/valuta/, [cData]);
+    const cDesc = col(/descri|dettaglio/);
+    const cImp = col(/^(eur|euro|importo)\b|importo/);
+    const cDare = col(/dare|addebit|uscit/);
+    const cAvere = col(/avere|accredit|entrat/);
+    const cCaus = col(/^caus/);
+    if (cImp < 0 && (cDare < 0 || cAvere < 0)) throw new Error('Nel file non trovo la colonna dell’importo («Importo», «EUR» oppure «Dare» e «Avere»).');
+    const intestazione = rows.slice(0, h).map((r) => r.map((x) => clean(x == null ? '' : x)).filter(Boolean).join(' ')).filter(Boolean)[0] || '';
+    const mov = [];
+    rows.slice(h + 1).forEach((r, k) => {
+      const data = dataEstratto(r[cData]);
+      if (!data) return;
+      let imp = cImp >= 0 ? importoEstratto(r[cImp]) : null;
+      if (imp === null && cDare >= 0) { const d = importoEstratto(r[cDare]), a = importoEstratto(r[cAvere]); if (d !== null || a !== null) imp = r2(num(a) - Math.abs(num(d))); }
+      if (imp === null) return;
+      const desc = clean(r[cDesc] == null ? '' : String(r[cDesc])).replace(/\s+/g, ' ');
+      mov.push({ i: mov.length, data, valuta: cVal >= 0 ? dataEstratto(r[cVal]) : null, desc, importo: imp, caus: cCaus >= 0 ? clean(r[cCaus] == null ? '' : r[cCaus]) : '', agg: aggregatore(desc), riga: h + 2 + k });
+    });
+    if (!mov.length) throw new Error('Nel file non trovo movimenti con data e importo.');
+    const date = mov.map((m) => m.data).sort();
+    return { nome: nomeFile || '', intestazione, movimenti: mov, dal: date[0], al: date[date.length - 1] };
+  }
+  // descrizione della banca più corta, senza le parti fisse (per la tabella; quella intera resta nel titolo)
+  function descBancaBreve(d) {
+    return clean(String(d || '')
+      .replace(/^BONIFICO A VOSTRO FAVORE\s+/i, '')
+      .replace(/\bBONIFICO (SEPA|ISTANTANEO)( DEL \d\d\.\d\d\.\d{4}( ALLE \d\d\.\d\d\.\d\d)?)?\s+/i, (m, t) => 'Bonifico ' + t.toLowerCase() + ' ')
+      .replace(/\b(TRN|CRO|ID FLUSSO)\s+\S+/gi, '')
+      .replace(/\b(COMM(ISSIONI)?( SERV)?|SPESE)\s+0,00\b/gi, '')
+      .replace(/\s{2,}/g, ' '));
+  }
+  // estratto da salvare: righe compatte [data, valuta, descrizione, importo, causale], senza superare la dimensione
+  // massima di un documento dell'archivio (le descrizioni si accorciano, poi restano i movimenti più recenti)
+  function compattaEstratto(E, extra) {
+    const base = { nome: E.nome || '', intestazione: E.intestazione || '', ...(extra || {}) };
+    const fai = (lung, da) => ({ ...base, tagliato: da > 0, m: E.movimenti.slice(da).map((m) => [m.data, m.valuta || '', lung ? String(m.desc).slice(0, lung) : m.desc, m.importo, m.caus || '']) });
+    for (const lung of [0, 260, 160, 100]) { const x = fai(lung, 0); if (JSON.stringify(x).length < 230000) return x; }
+    let da = 0, x;
+    do { da += Math.max(1, Math.ceil(E.movimenti.length / 20)); x = fai(100, da); } while (JSON.stringify(x).length >= 230000 && da < E.movimenti.length);
+    return x;
+  }
+  function estrattoDaCompatto(x) {
+    if (!x || !Array.isArray(x.m) || !x.m.length) return null;
+    const mov = x.m.map((r, i) => ({ i, data: r[0], valuta: r[1] || null, desc: r[2] || '', importo: r2(num(r[3])), caus: r[4] || '', agg: aggregatore(r[2] || ''), riga: null }));
+    const date = mov.map((m) => m.data).sort();
+    return { nome: x.nome || '', intestazione: x.intestazione || '', movimenti: mov, dal: date[0], al: date[date.length - 1], tagliato: !!x.tagliato };
+  }
+  const giorniTra = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
+  const centesimi = (v) => Math.round(num(v) * 100);
+  // parole dei nomi (per accostare un bonifico alla sua registrazione quando l'importo non torna)
+  const PAROLE_BANCA = new Set(['quota', 'quote', 'socio', 'soci', 'assoc', 'associazione', 'part', 'partecip', 'sport', 'versamento', 'banca', 'pagamento', 'mese', 'mensile', 'iscrizione', 'annuale', 'bonifico', 'favore', 'vostro', 'istantaneo', 'sepa', 'comm', 'spese', 'kung', 'basket', 'ottobre', 'novembre', 'settembre', 'dicembre', 'gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'attività', 'attivita', 'partecipazione', 'participazione', 'assicurazione', 'iscrizioni', 'castelceriolo', 'spinetta', 'mandrogne', 'alessandria', 'marengo', 'giuliano', 'vecchio', 'acqui', 'terme', 'elementari', 'medie', 'cuccioli', 'junior', 'teen', 'adulti', 'chuan', 'castellazzo', 'team', 'arti', 'orientali', 'limited', 'sumup', 'paypal', 'dilettantistica', 'sportiva', 'lezione', 'lezioni', 'corso', 'corsi', 'saldo', 'acconto', 'figlio', 'figlia', 'anno', 'mesi', 'retta', 'mensilita', 'istantaneo', 'causale', 'della', 'delle', 'dello', 'degli', 'nella', 'informazioni']);
+  const paroleBanca = (t) => new Set(String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^a-z]+/).filter((w) => w.length >= 4 && !PAROLE_BANCA.has(w)));
+  // Confronto tra estratto conto e movimenti di Banca del Registro Cassa. Si parte dall'ultimo movimento e si va
+  // a ritroso: prima i movimenti uno a uno (stesso importo, data vicina), poi i versamenti SumUp/PayPal, che
+  // riuniscono un blocco di incassi del registro (già al netto della commissione), infine le differenze.
+  function verificaBanca(s, K, E, opz) {
+    const o = opz || {};
+    const banca = contoFin(s, 'banca').n;
+    const RC = registroCassa(K.sorted, s);
+    const reg = RC.rows.filter((r) => r.be || r.bu).map((r, k) => ({
+      k, op: r.op, n: r.n, data: r.data, desc: r.desc, importo: r2(r.be - r.bu), sb: r.sb,
+      sumup: r.op.righe.some((x) => /sum\s*up|paypal/i.test(x.desc || '') && x.conto !== banca), parole: paroleBanca(r.desc + ' ' + r.op.righe.map((x) => x.desc || '').join(' ')), b: null
+    }));
+    const B = (E.movimenti || []).filter((m) => centesimi(m.importo) !== 0).map((m) => ({ ...m, r: [], esito: null, nota: '' }));
+    const ord = (a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0);
+    const bDesc = B.slice().sort((a, b) => ord(a, b) || b.i - a.i);
+    const lastReg = reg.length ? reg[reg.length - 1].data : null;
+    const libero = (r) => !r.b;
+    // 1. uno a uno: stesso importo, registro tra 15 giorni prima e 7 dopo la banca. Si assegnano prima le coppie
+    // più vicine (stesso nome nella descrizione, poi minor distanza di date), a parità dal movimento più recente:
+    // così un bonifico recente non «ruba» la registrazione di un bonifico uguale di qualche giorno prima
+    const coppie = [];
+    bDesc.filter((b) => !b.agg).forEach((b) => {
+      const pb = paroleBanca(b.desc);
+      reg.forEach((r) => {
+        if (r.sumup || centesimi(r.importo) !== centesimi(b.importo)) return;
+        const d = giorniTra(b.data, r.data);
+        if (d < -7 || d > 15) return;
+        const nome = [...r.parole].some((w) => pb.has(w));
+        coppie.push({ b, r, p: (d >= 0 ? d : 0.5 - d) - (nome ? 20 : 0) }); // a parità, meglio registrato prima del giorno in banca
+      });
+    });
+    coppie.sort((x, y) => x.p - y.p || ord(x.b, y.b) || y.b.i - x.b.i || y.r.k - x.r.k);
+    const abbina = (lim) => coppie.forEach(({ b, r, p }) => { if (p > lim || b.esito || r.b) return; r.b = b; b.r = [r]; b.esito = 'ok'; });
+    // prima le coppie sicure (stesso nome, o al più 3 giorni), poi i bonifici con lo stesso nome e importo diverso,
+    // infine le altre coppie con lo stesso importo: così un bonifico di un altro non prende la registrazione sbagliata
+    abbina(3);
+    const fino = (b) => !lastReg || b.data <= lastReg;
+    const nomeIn = (r, pb) => [...r.parole].some((w) => pb.has(w));
+    // alcuni elementi (da 2 a 4) che sommano l'importo cercato
+    const sottoinsieme = (lista, val, target) => {
+      const L = lista.slice(0, 10);
+      let trovato = null;
+      const cerca = (i, resto, scelti) => {
+        if (trovato) return;
+        if (Math.abs(resto) <= 1 && scelti.length >= 2) { trovato = scelti.slice(); return; }
+        if (i >= L.length || scelti.length >= 4 || Math.sign(resto) !== Math.sign(target)) return;
+        scelti.push(L[i]); cerca(i + 1, resto - centesimi(val(L[i])), scelti); scelti.pop();
+        cerca(i + 1, resto, scelti);
+      };
+      cerca(0, target, []);
+      return trovato;
+    };
+    // un bonifico per più registrazioni dello stesso socio (per esempio due figli)
+    bDesc.filter((b) => !b.esito && !b.agg && fino(b)).forEach((b) => {
+      const pb = paroleBanca(b.desc);
+      const cand = reg.filter((r) => libero(r) && !r.sumup && Math.sign(r.importo) === Math.sign(b.importo) && Math.abs(giorniTra(b.data, r.data)) <= 10 && nomeIn(r, pb))
+        .sort((x, y) => Math.abs(giorniTra(b.data, x.data)) - Math.abs(giorniTra(b.data, y.data)));
+      const x = sottoinsieme(cand, (r) => r.importo, centesimi(b.importo));
+      if (x) { x.forEach((r) => { r.b = b; }); b.r = x.sort((p, q) => p.k - q.k); b.esito = 'multi'; b.nota = 'Un solo movimento in banca per ' + x.length + ' registrazioni.'; }
+    });
+    // più bonifici per una registrazione (per esempio quota associativa e mese pagati a parte)
+    reg.filter((r) => libero(r) && !r.sumup && r.data <= (lastReg || r.data)).forEach((r) => {
+      const cand = bDesc.filter((b) => !b.esito && !b.agg && fino(b) && Math.sign(b.importo) === Math.sign(r.importo) && Math.abs(giorniTra(b.data, r.data)) <= 10 && nomeIn(r, paroleBanca(b.desc)))
+        .sort((x, y) => Math.abs(giorniTra(x.data, r.data)) - Math.abs(giorniTra(y.data, r.data)));
+      const x = sottoinsieme(cand, (b) => b.importo, centesimi(r.importo));
+      if (!x) return;
+      r.b = x[0];
+      x.forEach((b) => { b.r = [r]; b.esito = 'multi-b'; b.nota = 'La registrazione n. ' + r.n + ' (€ ' + fmt(r.importo) + ') riunisce ' + x.length + ' movimenti della banca: ' + x.map((y) => '€ ' + fmt(y.importo) + ' del ' + fmtData(y.data)).join(' + ') + '.'; });
+    });
+    bDesc.filter((b) => !b.esito && !b.agg && fino(b)).forEach((b) => {
+      const pb = paroleBanca(b.desc);
+      let best = null, bestD = 1e9;
+      reg.forEach((r) => {
+        if (!libero(r) || r.sumup || Math.sign(r.importo) !== Math.sign(b.importo)) return;
+        const d = Math.abs(giorniTra(b.data, r.data));
+        if (d > 10 || ![...r.parole].some((w) => pb.has(w))) return;
+        if (d < bestD) { bestD = d; best = r; }
+      });
+      if (best) { best.b = b; b.r = [best]; b.esito = 'importo'; b.nota = 'Stesso nome ma importo diverso: in banca € ' + fmt(b.importo) + ', nel registro € ' + fmt(best.importo) + ' (differenza € ' + fmt(r2(b.importo - best.importo)) + ').'; }
+    });
+    abbina(1e9);
+    // 2. versamenti SumUp/PayPal: blocco di incassi del registro prima del giorno del versamento
+    // con «stretto», solo gli incassi dal giorno del versamento precedente in poi (quelli prima sono suoi)
+    const candidati = (b, solo, giorniMax, stretto) => reg.filter((r) => libero(r) && r.importo > 0 && (solo ? r.sumup : true) && r.data <= b.data && giorniTra(b.data, r.data) <= giorniMax && !(stretto && b.prima && r.data < b.prima))
+      .sort((x, y) => (x.data < y.data ? 1 : x.data > y.data ? -1 : y.k - x.k));
+    // incassi consecutivi, partendo dal più recente. Con «interi» il blocco è fatto di giornate intere (SumUp versa
+    // gli incassi di un giorno, o del fine settimana): al più 2 giornate saltate in cima. Senza, si può fermare a
+    // metà giornata e saltare fino a 6 incassi in cima, che vanno al versamento dopo
+    const consecutivi = (b, solo, interi, stretto) => {
+      const target = centesimi(b.importo);
+      const cand = candidati(b, solo, 12, stretto);
+      for (const lista of [cand.filter((r) => r.data < b.data), cand]) {
+        const gruppi = [];
+        lista.forEach((r) => { const g = gruppi[gruppi.length - 1]; if (interi && g && g[0].data === r.data) g.push(r); else gruppi.push([r]); });
+        for (let s0 = 0; s0 < Math.min(gruppi.length, interi ? 3 : 7); s0++) {
+          let tot = 0;
+          for (let e = s0; e < gruppi.length; e++) {
+            tot += gruppi[e].reduce((t, r) => t + centesimi(r.importo), 0);
+            if (Math.abs(tot - target) <= 1) return [].concat(...gruppi.slice(s0, e + 1));
+            if (tot > target + 1) break;
+          }
+        }
+      }
+      return null;
+    };
+    // non consecutivi: alcuni incassi SumUp dei giorni appena prima (preferendo i più recenti)
+    const sparsi = (b) => {
+      const L = candidati(b, true, 7).filter((r) => r.data < b.data).slice(0, 24);
+      let trovato = null, passi = 0;
+      const cerca = (i, resto, scelti) => {
+        if (trovato || ++passi > 200000) return;
+        if (Math.abs(resto) <= 1) { trovato = scelti.slice(); return; }
+        if (resto < 0 || i >= L.length) return;
+        scelti.push(L[i]); cerca(i + 1, resto - centesimi(L[i].importo), scelti); scelti.pop();
+        cerca(i + 1, resto, scelti);
+      };
+      cerca(0, centesimi(b.importo), []);
+      return trovato;
+    };
+    const versamenti = bDesc.filter((b) => b.agg && b.importo > 0);
+    versamenti.forEach((b) => { const p = versamenti.find((x) => x.agg === b.agg && x.data < b.data); b.prima = p ? p.data : null; }); // versamento precedente
+    const assegna = (b, righe, esito, nota) => { righe.forEach((r) => { r.b = b; }); b.r = righe.slice().sort((p, q) => p.k - q.k); b.esito = esito; b.nota = nota || ''; };
+    // prima tutti i blocchi esatti di soli incassi SumUp: un versamento che non torna non deve prendere gli incassi degli altri
+    [true, false].forEach((stretto) => [true, false].forEach((interi) => versamenti.forEach((b) => { if (!b.esito) { const x = consecutivi(b, true, interi, stretto); if (x) assegna(b, x, 'blocco'); } })));
+    // movimenti SumUp/PayPal in uscita (rari): uno a uno
+    bDesc.filter((b) => b.agg && b.importo < 0 && !b.esito).forEach((b) => {
+      const r = reg.find((x) => libero(x) && centesimi(x.importo) === centesimi(b.importo) && Math.abs(giorniTra(b.data, x.data)) <= 15);
+      if (r) { r.b = b; b.r = [r]; b.esito = 'ok'; }
+    });
+    // versamenti: blocchi con incassi registrati senza la riga della commissione SumUp, poi incassi non consecutivi
+    versamenti.forEach((b) => { if (!b.esito) { const x = consecutivi(b, false, true) || consecutivi(b, false, false); if (x) assegna(b, x, 'blocco'); } });
+    versamenti.forEach((b) => { if (!b.esito) { const x = sparsi(b); if (x) assegna(b, x, 'blocco-sparso'); } });
+    // versamento che non torna: gli incassi SumUp dei giorni appena prima, con la differenza
+    versamenti.filter((b) => !b.esito && fino(b)).forEach((b) => {
+      const cand = candidati(b, true, 4, true).filter((r) => r.data < b.data);
+      if (!cand.length) return;
+      // gli incassi dello stesso giorno (o del fine settimana) vanno insieme
+      let tot = 0, migliore = null;
+      cand.forEach((r, i) => { tot += centesimi(r.importo); const fineGiorno = !cand[i + 1] || cand[i + 1].data !== r.data; if (fineGiorno && (!migliore || Math.abs(tot - centesimi(b.importo)) < Math.abs(migliore.tot - centesimi(b.importo)))) migliore = { tot, n: i + 1 }; });
+      const diff = r2(b.importo - migliore.tot / 100);
+      if (Math.abs(diff) > Math.max(60, b.importo / 2)) return;
+      const righe = cand.slice(0, migliore.n);
+      assegna(b, righe, 'importo', 'Il versamento SumUp è di € ' + fmt(b.importo) + ', gli incassi con carta registrati ' + (righe[0].data === righe[righe.length - 1].data ? 'il ' + fmtData(righe[0].data) : 'dal ' + fmtData(righe[righe.length - 1].data) + ' al ' + fmtData(righe[0].data)) + ' sommano € ' + fmt(migliore.tot / 100) + ' (differenza € ' + fmt(diff) + '): ' + (diff > 0 ? 'manca un incasso o un importo è più basso' : 'c’è un incasso in più o un importo è più alto') + '.');
+    });
+    // stesso importo con data lontana (solo fino all'ultimo movimento registrato)
+    bDesc.filter((b) => !b.esito && !b.agg && fino(b)).forEach((b) => {
+      let best = null, bestD = 1e9;
+      reg.forEach((r) => {
+        if (!libero(r) || centesimi(r.importo) !== centesimi(b.importo)) return;
+        const d = Math.abs(giorniTra(b.data, r.data));
+        if (d <= 60 && d < bestD) { bestD = d; best = r; }
+      });
+      if (best) { best.b = b; b.r = [best]; b.esito = 'data'; b.nota = 'Stesso importo, ma ' + bestD + ' giorni di distanza tra banca e registro.'; }
+    });
+    // 4. quello che resta
+    B.forEach((b) => {
+      if (b.esito) return;
+      if (b.data < s.inizio || (b.agg && giorniTra(b.data, s.inizio) <= 3 && !reg.some((r) => r.data < b.data))) {
+        b.esito = 'prec'; b.nota = 'Riguarda probabilmente l’esercizio precedente (movimenti prima del ' + fmtData(s.inizio) + ').';
+      } else if (lastReg && b.data > lastReg) {
+        b.esito = 'da-registrare'; b.nota = 'Dopo l’ultimo movimento del Registro Cassa (' + fmtData(lastReg) + ').';
+      } else {
+        b.esito = 'manca-reg';
+        if (b.agg) {
+          // il blocco più vicino, per aiutare a trovare l'errore
+          const cand = reg.filter((r) => libero(r) && r.importo > 0 && r.data < b.data && giorniTra(b.data, r.data) <= 7).sort((x, y) => (x.data < y.data ? 1 : -1));
+          let tot = 0, migliore = null;
+          cand.forEach((r) => { tot = r2(tot + r.importo); if (!migliore || Math.abs(tot - b.importo) < Math.abs(migliore - b.importo)) migliore = tot; });
+          b.nota = 'Nessun blocco di incassi del registro dà questo importo' + (migliore !== null ? ': il più vicino somma € ' + fmt(migliore) + ' (differenza € ' + fmt(r2(b.importo - migliore)) + ').' : '.');
+        }
+      }
+    });
+    const regLib = reg.filter(libero).map((r) => {
+      let esito = 'manca-banca', nota = '';
+      if (r.data < E.dal) { esito = 'fuori'; nota = 'Prima dell’inizio dell’estratto conto (' + fmtData(E.dal) + ').'; }
+      else if (r.data > E.al) { esito = 'dopo'; nota = 'Dopo la fine dell’estratto conto (' + fmtData(E.al) + '): si verifica con un estratto più recente.'; }
+      else if (giorniTra(E.al, r.data) <= (r.sumup ? 2 : 1)) { esito = 'non-ancora'; nota = r.sumup ? 'Incasso SumUp non ancora versato in banca alla data dell’estratto.' : 'Alla fine dell’estratto conto: forse non ancora arrivato in banca.'; }
+      else if (r.sumup) nota = 'Incasso SumUp che non entra in nessun versamento.';
+      return { r, esito, nota };
+    });
+    // righe del confronto, dalla più recente
+    const righe = B.map((b) => ({ data: b.data, b, r: b.r, esito: b.esito, nota: b.nota }))
+      .concat(regLib.map((x) => ({ data: x.r.data, b: null, r: [x.r], esito: x.esito, nota: x.nota })))
+      .sort((x, y) => (x.data < y.data ? 1 : x.data > y.data ? -1 : (y.b ? y.b.i : -1) - (x.b ? x.b.i : -1)));
+    const conta = (es) => righe.filter((x) => es.includes(x.esito));
+    const somma = (l, lato) => r2(l.reduce((t, x) => t + (lato === 'b' ? (x.b ? x.b.importo : 0) : x.r.reduce((u, r) => u + r.importo, 0)), 0));
+    const diffB = conta(['manca-reg']), diffR = conta(['manca-banca']), daReg = conta(['da-registrare']), nonAnc = conta(['non-ancora']), imp = conta(['importo']), dat = conta(['data']);
+    // saldo: registro alla data di fine dell'estratto e saldo dato dalla banca. La differenza dovrebbe essere spiegata
+    // dalle righe senza abbinamento; i movimenti dell'esercizio precedente si compensano con il saldo iniziale
+    const rAl = RC.rows.filter((r) => r.data && r.data <= E.al);
+    const saldoReg = rAl.length ? rAl[rAl.length - 1].sb : num(s.saldi.banca);
+    const saldoBanca = isNum(o.saldoBanca) ? r2(Number(o.saldoBanca)) : null;
+    const spiegata = r2(somma(diffB, 'b') + somma(daReg, 'b') - somma(diffR, 'r') - somma(nonAnc.filter((x) => x.data <= E.al), 'r') + imp.reduce((t, x) => t + x.b.importo - x.r.reduce((u, r) => u + r.importo, 0), 0));
+    return {
+      estratto: E, righe, lastReg, banca,
+      n: { banca: B.length, abbinati: B.filter((b) => ['ok', 'blocco', 'blocco-sparso', 'multi', 'multi-b'].includes(b.esito)).length, versamenti: versamenti.length, versamentiOk: versamenti.filter((b) => /blocco/.test(b.esito || '')).length },
+      diffBanca: { n: diffB.length, tot: somma(diffB, 'b') }, diffRegistro: { n: diffR.length, tot: somma(diffR, 'r') },
+      daRegistrare: { n: daReg.length, tot: somma(daReg, 'b') }, nonAncora: { n: nonAnc.length, tot: somma(nonAnc, 'r') },
+      importo: { n: imp.length }, data: { n: dat.length }, prec: { n: conta(['prec']).length, tot: somma(conta(['prec']), 'b') },
+      saldo: { al: E.al, registro: r2(saldoReg), banca: saldoBanca, diff: saldoBanca === null ? null : r2(saldoBanca - saldoReg), spiegata }
+    };
+  }
+  const ESITI_BANCA = {
+    ok: ['Abbinato', 'ok'], blocco: ['Blocco di incassi abbinato', 'ok'], 'blocco-sparso': ['Incassi sparsi abbinati', 'ok'], multi: ['Abbinato a più registrazioni', 'ok'], 'multi-b': ['Abbinato, più bonifici', 'ok'],
+    data: ['Data diversa', 'warn'], importo: ['Importo diverso', 'err'], 'manca-reg': ['In banca, non nel registro', 'err'], 'manca-banca': ['Nel registro, non in banca', 'err'],
+    'da-registrare': ['Da registrare', 'warn'], 'non-ancora': ['Non ancora in banca', 'warn'], prec: ['Esercizio precedente', 'muted'], fuori: ['Prima dell’estratto', 'muted'], dopo: ['Dopo l’estratto', 'muted']
+  };
+  function verificaBancaWorkbook(ExcelJS, s, V) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Bilancio ASD';
+    const ws = wb.addWorksheet('Verifica banca', { views: [{ state: 'frozen', ySplit: 5 }] });
+    const E = V.estratto;
+    ws.getCell('A1').value = 'VERIFICA ESTRATTO CONTO – ' + (E.intestazione || 'banca') ; ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.getCell('A2').value = 'Estratto dal ' + fmtData(E.dal) + ' al ' + fmtData(E.al) + ' (' + V.n.banca + ' movimenti) confrontato con il conto «' + V.banca + '» del Registro Cassa, esercizio ' + s.es + '. Ultimo movimento del registro: ' + (V.lastReg ? fmtData(V.lastReg) : '—') + '.';
+    ws.getCell('A3').value = 'Abbinati ' + V.n.abbinati + ' su ' + V.n.banca + ' · versamenti SumUp abbinati ' + V.n.versamentiOk + ' su ' + V.n.versamenti + ' · in banca non nel registro ' + V.diffBanca.n + ' (€ ' + fmt(V.diffBanca.tot) + ') · nel registro non in banca ' + V.diffRegistro.n + ' (€ ' + fmt(V.diffRegistro.tot) + ') · da registrare ' + V.daRegistrare.n + ' (€ ' + fmt(V.daRegistrare.tot) + ')' + (V.saldo.banca !== null ? ' · saldo banca € ' + fmt(V.saldo.banca) + ', registro € ' + fmt(V.saldo.registro) + ', differenza € ' + fmt(V.saldo.diff) : '');
+    const tit = ['Data banca', 'Descrizione banca', 'Importo banca', 'Data registro', 'N.', 'Registro Cassa', 'Importo registro', 'Esito', 'Nota'];
+    ws.getRow(5).values = tit; ws.getRow(5).font = { bold: true };
+    ws.getRow(5).eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE4E4E4' } }; c.border = { bottom: { style: 'thin' } }; });
+    const colori = { ok: null, warn: 'FFFFF2CC', err: 'FFF8D7D4', muted: 'FFEFEFEF' };
+    const NF = '#,##0.00;[Red]-#,##0.00';
+    const dt = (iso) => (iso ? new Date(iso + 'T00:00:00Z') : null);
+    let r = 6;
+    V.righe.forEach((x) => {
+      const es = ESITI_BANCA[x.esito] || [x.esito, 'muted'];
+      const regs = x.r.length ? x.r : [null];
+      regs.forEach((rg, j) => {
+        const row = ws.getRow(r);
+        row.values = [j === 0 && x.b ? dt(x.b.data) : null, j === 0 && x.b ? x.b.desc : null, j === 0 && x.b ? x.b.importo : null, rg ? dt(rg.data) : null, rg ? rg.n : null, rg ? rg.desc : null, rg ? rg.importo : null, j === 0 ? es[0] : null, j === 0 ? x.nota || null : null];
+        row.getCell(1).numFmt = 'dd/mm/yyyy'; row.getCell(4).numFmt = 'dd/mm/yyyy'; row.getCell(3).numFmt = NF; row.getCell(7).numFmt = NF;
+        if (colori[es[1]]) for (let c = 1; c <= 9; c++) row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colori[es[1]] } };
+        r++;
+      });
+      if (x.r.length > 1) { const row = ws.getRow(r); row.getCell(6).value = x.esito === 'multi' ? 'Totale delle registrazioni' : 'Totale del blocco'; row.getCell(6).font = { italic: true }; row.getCell(7).value = r2(x.r.reduce((t, y) => t + y.importo, 0)); row.getCell(7).numFmt = NF; row.getCell(7).font = { italic: true }; r++; }
+    });
+    [11, 70, 13, 11, 6, 52, 13, 26, 60].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    ws.getColumn(2).alignment = { wrapText: true, vertical: 'top' }; ws.getColumn(9).alignment = { wrapText: true, vertical: 'top' };
+    ws.autoFilter = 'A5:I5';
+    ws.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '5:5' };
+    return wb;
+  }
+
   // ---------------------------------------------------------------- ricavi netti dei corsi (controllo di gestione)
   // Per ogni corso di kung fu e tai chi e ogni mese: incassi dei soci (quote mensili pagate, in qualunque modo,
   // più gli importi scritti nelle caselle grigie), uscite per i docenti e per la palestra, risultato del mese e
@@ -3827,8 +4199,8 @@
     rendicontoEconomico, statoPatrimoniale, rendicontoCassa, calcola,
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
-    numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, ricaviNetti, ricaviNettiWorkbook, leggiCostiRicaviNetti, incassiCorsi, costoCorsoMese, etichettaCorso, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, disciplinaDaCorsi, corsiLibro, esBreve,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, ricaviNetti, ricaviNettiWorkbook, leggiCostiRicaviNetti, esclusiEsercizio, leggiEstratto, verificaBanca, verificaBancaWorkbook, ESITI_BANCA, dataEstratto, descBancaBreve, compattaEstratto, estrattoDaCompatto, incassiCorsi, costoCorsoMese, etichettaCorso, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;
