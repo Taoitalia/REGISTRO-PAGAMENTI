@@ -277,11 +277,8 @@ table.cr-t tr.rosso td { color: var(--red); font-size: 13px; }
 }
 
 /* quote da pagare su WhatsApp: promemoria del lunedì, impostazioni, anteprima delle tabelle */
-.inv-banner { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.inv-banner .btn.in-corso, .btn.in-corso { opacity: .65; cursor: progress; }
-.inv-banner .row { flex: 0 1 auto; align-items: center; }
-.inv-banner .row > * { flex: 0 0 auto; }
-.inv-banner .btn svg, .inv-card .btn svg { width: 18px; height: 18px; }
+.btn.in-corso { opacity: .65; cursor: progress; }
+.inv-card .btn svg { width: 18px; height: 18px; }
 .inv-card { border: 1px solid var(--rule); border-radius: 8px; padding: 12px; }
 .inv-corsi { display: flex; gap: 6px; flex-wrap: wrap; }
 .inv-chip { border: 1px solid var(--rule); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 600; cursor: pointer; }

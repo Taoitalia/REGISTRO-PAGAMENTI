@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = '2149930c';
+  const VERSIONE_APP = 'da8dd5f9';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)
@@ -283,7 +283,7 @@
       '<select id="es" aria-label="Anno sportivo">' + esercizi().map((e) => '<option' + (e === S.es ? ' selected' : '') + '>' + e + '</option>').join('') + '</select>' +
       '<span id="sync">' + htmlSync() + '</span></header>' +
       '<nav class="tabs">' + visteAttive().map(([id, l]) => '<a href="#' + id + '" class="' + (S.view === id ? 'on' : '') + '"' + (S.view === id ? ' aria-current="page"' : '') + '>' + ICONE[id] + '<span>' + l + '</span></a>').join('') + '</nav>' +
-      '<main>' + (S.view === 'incassa' || S.view === 'corsi' ? bannerInvii() : '') + ({ incassa: viewIncassa, corsi: viewCorsi, soci: viewSoci, ultimi: viewUltimi, cruscotto: viewCruscotto, altro: viewAltro }[S.view] || viewIncassa)() + '</main>';
+      '<main>' + ({ incassa: viewIncassa, corsi: viewCorsi, soci: viewSoci, ultimi: viewUltimi, cruscotto: viewCruscotto, altro: viewAltro }[S.view] || viewIncassa)() + '</main>';
     renderDialog();
     if (att) { const n = document.getElementById(att); if (n && n.tagName === 'INPUT') { const v = n.value; n.focus(); try { n.setSelectionRange(v.length, v.length); } catch (e) { /* */ } } }
     window.scrollTo(0, y);
@@ -291,7 +291,7 @@
 
   // ------------------------------------------------------------------ vista: incassa
   function nuovoForm() {
-    return { socio: null, q: '', sel: {}, iscr: false, quote: {}, impIscr: Number(S.conf.quotaIscrizione) || 25, mezzo: 'contanti', data: oggi(), nota: '', ricorda: {} };
+    return { socio: null, q: '', sel: {}, iscr: false, quote: {}, impIscr: Number(S.conf.quotaIscrizione) || 25, mezzo: null, data: oggi(), nota: '', ricorda: {} };
   }
   function scegliSocio(sid, preset, tieniUnisci) {
     const u = tieniUnisci && S.F ? S.F.unisci : null;
@@ -385,6 +385,15 @@
       '<div class="legenda"><span><i style="background:var(--accent)"></i>da incassare ora</span><span><i style="background:var(--amber-soft);border-color:var(--amber)"></i>scaduto</span><span><i style="background:repeating-linear-gradient(135deg,var(--grigio) 0 3px,transparent 3px 6px)"></i>da non incassare</span><span><i style="background:var(--m-sumup)"></i>pagato</span></div>' +
       '<div><button class="btn sm ghost" data-act="iscrivi" data-socio="' + esc(so.id) + '">+ Iscrivi a un altro corso</button></div></div>';
 
+    // come paga: subito sotto «Cosa paga», senza una modalità già scelta (nel pagamento unico resta quella del primo socio)
+    if (F.unisci) {
+      h += '<div class="panel pad stack"><h2 class="sez">Come paga</h2><div class="small">' + esc(nomeMezzo(F.unisci.mezzo)) + ' · ' + esc(fmtData(F.unisci.data)) + '<span class="muted"> · come il resto del pagamento</span></div></div>';
+    } else {
+      h += '<div class="panel pad stack' + (F.mezzo ? '' : ' da-scegliere') + '" id="come-paga"><h2 class="sez">Come paga</h2><div class="seg" role="group" aria-label="Modalità di pagamento">' +
+        Object.keys(MEZZI).map((m) => '<button type="button" data-mezzo="' + m + '" class="' + (F.mezzo === m ? 'on' : '') + '" aria-pressed="' + (F.mezzo === m) + '">' + (m === 'contanti' ? '' : '<span class="sw" style="background:var(--m-' + m + ')"></span>') + MEZZI[m] + '</button>').join('') + '</div>' +
+        (F.mezzo ? '' : '<p class="small muted" style="margin:0">Tocca la modalità di pagamento: non ce n’è una già scelta.</p>') + '</div>';
+    }
+
     // importi
     const righe = righeImporto(F);
     const tot = r2(righe.reduce((x, r) => x + r.totale, 0) + (F.iscr ? num(F.impIscr) : 0));
@@ -395,18 +404,16 @@
       (!righe.length && !F.iscr ? '<div class="muted small">Scegli almeno un mese o l’iscrizione.</div>' : '') +
       '</div><div class="totale"><span>Totale</span><span>€ ' + eur(tot) + '</span></div></div>';
 
-    // come e quando (nel pagamento unico restano quelli del primo socio)
-    if (F.unisci) {
-      h += '<div class="panel pad stack"><h2 class="sez">Come</h2><div class="small">' + esc(nomeMezzo(F.unisci.mezzo)) + ' · ' + esc(fmtData(F.unisci.data)) + '<span class="muted"> · come il resto del pagamento</span></div></div>';
-    } else {
-      h += '<div class="panel pad stack"><h2 class="sez">Come</h2><div class="seg" role="group" aria-label="Mezzo di pagamento">' +
-        Object.keys(MEZZI).map((m) => '<button type="button" data-mezzo="' + m + '" class="' + (F.mezzo === m ? 'on' : '') + '" aria-pressed="' + (F.mezzo === m) + '">' + (m === 'contanti' ? '' : '<span class="sw" style="background:var(--m-' + m + ')"></span>') + MEZZI[m] + '</button>').join('') + '</div>' +
+    // quando (nel pagamento unico restano data e nota del primo socio)
+    if (!F.unisci) {
+      h += '<div class="panel pad stack"><h2 class="sez">Quando</h2>' +
         '<div class="row"><label class="field"><span>Data del pagamento</span><input class="in" type="date" id="f-data" value="' + esc(F.data) + '" max="' + oggi() + '"></label>' +
         '<label class="field" style="flex:2 1 200px"><span>Nota (facoltativa)</span><input class="in" id="f-nota" value="' + esc(F.nota) + '" placeholder="per esempio: genitore di Mario e Luca"></label></div></div>';
     }
+    const pronto = tot > 0 && !!(F.unisci || F.mezzo);
     h += '<div class="panel pad stack"><h2 class="sez">' + (F.unisci ? 'Altri soci nello stesso pagamento?' : 'Paga anche per altri soci?') + '</h2><p class="small muted" style="margin:0">Per esempio un genitore che paga per due figli con un solo bonifico o un’unica somma in contanti: registra questo socio e aggiungi gli altri. Nel Bilancio sarà una sola scrittura. Pagamenti fatti separatamente, anche di soci con lo stesso cognome, restano scritture separate.</p>' +
-      '<div><button class="btn" data-act="registra-altro"' + (tot > 0 ? '' : ' disabled') + '>' + (F.unisci ? '+ Aggiungi e passa a un altro socio' : '+ Registra e aggiungi un altro socio') + '</button></div></div>';
-    h += '<div class="savebar"><button class="btn primary big" data-act="registra"' + (tot > 0 ? '' : ' disabled') + '>' + (F.unisci ? 'Aggiungi € ' + eur(tot) + ' e chiudi il pagamento' : 'Registra € ' + eur(tot)) + '</button></div>';
+      '<div><button class="btn" data-act="registra-altro"' + (pronto ? '' : ' disabled') + '>' + (F.unisci ? '+ Aggiungi e passa a un altro socio' : '+ Registra e aggiungi un altro socio') + '</button></div></div>';
+    h += '<div class="savebar"><button class="btn primary big" data-act="registra"' + (pronto ? '' : ' disabled') + '>' + (tot > 0 && !F.unisci && !F.mezzo ? 'Scegli come paga' : F.unisci ? 'Aggiungi € ' + eur(tot) + ' e chiudi il pagamento' : 'Registra € ' + eur(tot)) + '</button></div>';
     return h + '</div>';
   }
   function ultimiBreve() {
@@ -430,6 +437,7 @@
     if (!righe.length && !F.iscr) return;
     const U = F.unisci;
     const data = U ? U.data : F.data, mezzo = U ? U.mezzo : F.mezzo, nota = U ? U.nota : (F.nota || null);
+    if (!mezzo) { toast('Scegli come paga.', 'err'); const n = $('#come-paga'); if (n) n.scrollIntoView({ block: 'center' }); return; }
     if (!data) { toast('Indica la data del pagamento.', 'err'); return; }
     const st = situazione(F.socio);
     const ver = U ? U.ver : uid('v');
@@ -839,18 +847,11 @@
       (n ? '<a class="btn primary" href="https://wa.me/' + n + '" target="_blank" rel="noopener">Apri la chat WhatsApp</a>' : '') + '<button class="btn" data-inv-fatto="' + esc(inv.id) + '">Segna come inviato</button>') + '</div>';
     return h;
   }
-  // invio delle quote da pagare, disponibile in qualsiasi momento in Incassa e in Corsi
-  function bannerInvii() {
-    const da = invii().filter((x) => corsiInvio(x).length && numeroTel(x.tel));
-    if (!da.length) return '';
-    return '<div class="panel pad inv-banner"><div><b>Quote da pagare su WhatsApp</b><div class="small muted">Tabelle con le quote non pagate fino a ' + esc(meseNome(meseCorrente())) + ', con i dati aggiornati al momento dell’invio.</div></div>' +
-      '<div class="row">' + da.map((x) => '<button class="btn primary" data-inv-invia="' + esc(x.id) + '" title="' + esc(testoUltimo(x.ultimo)) + '">' + ICONA_MSG + esc(x.nome) + '</button>').join('') + '</div></div>';
-  }
   function inviiHtml() {
     const lista = invii();
     const cs = corsi().filter((c) => c.attivo !== false);
     let h = '<div class="panel pad stack"><h2 class="sez">Quote da pagare su WhatsApp</h2>' +
-      '<p class="small muted" style="margin:0">Per ogni destinatario, una tabella JPEG per corso (sfondo bianco, da stampare) con le sole quote non pagate fino al mese in corso. Si inviano quando vuoi, dai pulsanti in Incassa e in Corsi o da «Invia ora» qui sotto: l’app legge prima i pagamenti aggiornati dal Foglio Google, poi apre la condivisione; scegli WhatsApp e il contatto. Queste impostazioni valgono solo per questo dispositivo.</p>';
+      '<p class="small muted" style="margin:0">Per ogni destinatario, una tabella JPEG per corso (sfondo bianco, da stampare) con le sole quote non pagate fino al mese in corso. Si inviano quando vuoi, con «Invia ora» qui sotto: l’app legge prima i pagamenti aggiornati dal Foglio Google, poi apre la condivisione; scegli WhatsApp e il contatto. Queste impostazioni valgono solo per questo dispositivo.</p>';
     if (!lista.length) return h + '<div><button class="btn primary" data-act="inv-numeri">Inserisci i numeri WhatsApp</button></div></div>';
     h += '<div class="inv-numeri">' + RUOLI.map(([r, e]) => { const x = invioRuolo(r); return '<div><span class="small muted">' + esc(e) + '</span><b>' + esc((x && x.tel) || 'nessun numero') + '</b></div>'; }).join('') +
       '<button class="btn sm" data-act="inv-numeri">Cambia i numeri</button></div>';

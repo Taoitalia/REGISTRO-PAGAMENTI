@@ -1004,7 +1004,9 @@
     const ultimoMese = fogli.reduce((m, f) => (f.ultimoMese && (!m || f.ultimoMese > m) ? f.ultimoMese : m), null);
     // telefoni scritti nell'app: servono alle schede delle ricevute che non hanno ancora il numero
     const telefoni = Array.from(soci.values()).filter((so) => clean(so.telefono || '')).map((so) => ({ nomeReg: clean(so.nominativo), telefono: clean(so.telefono) }));
-    return { fogli, pagamenti, saltati: [], avvisi, righe, ultimoMese, origine: 'online', telefoni };
+    // soci senza la spunta «Socio attivo» nell'app (per il conteggio dei soci attivi del libro)
+    const inattivi = Array.from(soci.values()).filter((so) => so.attivo === false || String(so.attivo).toLowerCase() === 'false').map((so) => clean(so.nominativo)).filter(Boolean);
+    return { fogli, pagamenti, saltati: [], avvisi, righe, ultimoMese, origine: 'online', telefoni, inattivi };
   }
 
   // ---- nomi: nel registro «NOME COGNOME» per esteso, nel Libro Giornale «Cognome N.»
@@ -1964,6 +1966,40 @@
   }
   // corsi segnati nel libro soci: basket (un corso) e, con «kungfu», anche kung fu / tai chi
   const corsiLibro = (e) => (e && e.basket ? [e.basket].concat(e.kungfu ? ['kung fu'] : []) : []);
+  // corsi trovati in automatico: dal registro pagamenti (quelli frequentati ora) o, senza, dalla lettera del
+  // basket nel libro; segnati nel libro basket e kung fu insieme, ci sono tutti e due anche se il registro ne ha uno
+  function corsiAutomatici(e, s, contabilita) {
+    const daRegistro = corsiSocio(s, contabilita, true);
+    const corsi = daRegistro.length ? daRegistro.slice() : corsiLibro(e);
+    if (e && e.basket && e.kungfu) {
+      if (!corsi.some(isBasket)) corsi.push(e.basket);
+      if (!corsi.some((c) => !isBasket(c))) corsi.push('kung fu');
+    }
+    return corsi;
+  }
+  // dai corsi scelti a mano: il corso di basket da scrivere nel libro (quello già segnato, se c'è ancora)
+  // e se il socio fa anche kung fu / tai chi
+  function basketDaCorsi(corsi, prima) {
+    const b = (corsi || []).filter(isBasket);
+    const basket = b.length ? (prima && b.includes(prima) ? prima : b[0]) : null;
+    return { basket, kungfu: !!basket && (corsi || []).some((c) => !isBasket(c)) };
+  }
+  // numeri del libro soci: le righe indicate perdono il numero (tornano nuovi soci in attesa) e chi le seguiva
+  // nell'ordine scala in avanti, prendendo i numeri liberati. Si usano gli stessi numeri di prima, dal primo
+  // numero tolto in poi (restano anche eventuali buchi); gli ultimi restano liberi. Dà i numeri che cambiano.
+  function togliNumeriLibro(libro, togli) {
+    const T = togli instanceof Set ? togli : new Set(togli || []);
+    const conN = (libro || []).filter((r) => r && r.id && !r.inAttesa && r.n !== null && r.n !== undefined && r.n !== '' && isFinite(Number(r.n)));
+    const inT = conN.filter((r) => T.has(r.id));
+    if (!inT.length) return [];
+    const m = Math.min(...inT.map((r) => Number(r.n)));
+    const coda = conN.filter((r) => Number(r.n) >= m).sort((a, b) => Number(a.n) - Number(b.n) || String(a.id).localeCompare(String(b.id)));
+    const posti = coda.map((r) => Number(r.n));
+    const out = [];
+    coda.filter((r) => !T.has(r.id)).forEach((r, i) => { if (Number(r.n) !== posti[i]) out.push({ id: r.id, da: Number(r.n), a: posti[i] }); });
+    return out;
+  }
+  const stessiCorsi = (a, b) => { const x = new Set((a || []).map((c) => clean(c).toLowerCase())), y = new Set((b || []).map((c) => clean(c).toLowerCase())); return x.size === y.size && Array.from(x).every((c) => y.has(c)); };
   const csCache = new WeakMap();
   // attuali = solo i corsi che il socio frequenta ora (se il registro li distingue)
   function corsiSocio(s, nome, attuali) {
@@ -2132,16 +2168,16 @@
       const genitore = e.genitore && e.genitore.cognome ? e.genitore : (a && a.minore && a.pagatore && normNome(a.pagatore) !== kn ? { nominativo: a.pagatore, cf: a.cf } : null);
       const st = (e.stagioni && e.stagioni[s.es]) || {};
       // corsi: dal registro pagamenti e, per il basket, dalla lettera del libro; da lì gli enti
-      const daRegistro = corsiSocio(s, contabilita, true);
-      const corsi = daRegistro.length ? daRegistro.slice() : corsiLibro(e);
-      // segnato a mano nel libro: basket e kung fu insieme, anche se il registro ne conosce uno solo
-      if (e.basket && e.kungfu) {
-        if (!corsi.some(isBasket)) corsi.push(e.basket);
-        if (!corsi.some((c) => !isBasket(c))) corsi.push('kung fu');
-      }
+      const corsi = corsiAutomatici(e, s, contabilita);
+      // corsi ed enti corretti a mano nella scheda per l'anno: valgono su quelli trovati
+      const corsiAuto = corsi.slice();
+      if (Array.isArray(st.corsi) && st.corsi.length) corsi.splice(0, corsi.length, ...st.corsi);
+      const corsiManuali = Array.isArray(st.corsi) && st.corsi.length > 0;
       const entrambi = corsi.some(isBasket) && corsi.some((c) => !isBasket(c));
-      let enti = entiDaCorsi(corsi);
-      if (!enti.length) enti = ['UISP'];
+      let entiAuto = entiDaCorsi(corsi);
+      if (!entiAuto.length) entiAuto = ['UISP'];
+      const entiManuali = Array.isArray(st.enti) && ENTI.some((en) => st.enti.includes(en));
+      const enti = entiManuali ? ENTI.filter((en) => st.enti.includes(en)) : entiAuto;
       const tess = {}, piatt = {};
       enti.forEach((en) => { tess[en] = !!st['tess_' + en]; piatt[en] = !!st['piatt_' + en]; });
       // segni messi prima della distinzione tra enti: valgono per l'ente del socio
@@ -2152,7 +2188,7 @@
         iscr, iscrData, iscrFonte, ultimo, aggiornaData: !!(assoc && e.ultimoPagamento !== assoc.data), // la data giusta è quella del Libro Giornale
         nascita, eta: nascita ? eta(nascita, oggi) : null, minore: minoreOggi, minoreIscr, genitore,
         mancaGenitore: attivo && minoreIscr && !(genitore && (genitore.cf || '').length === 16),
-        corsi, entrambi, enti, tess, piatt,
+        corsi, corsiAuto, corsiManuali, entrambi, enti, entiAuto, entiManuali, tess, piatt,
         tesserato: enti.every((en) => tess[en]), piattaforma: enti.every((en) => piatt[en]),
         storia: e.cf && perCF.get(e.cf) && perCF.get(e.cf).length > 1 ? perCF.get(e.cf).filter((id) => id !== e.id) : []
       };
@@ -3061,7 +3097,8 @@
       fogli: (L.fogli || []).map((f) => ({ nome: f.nome, ultimoMese: f.ultimoMese || null, quota: qc[f.nome] && isNum(qc[f.nome].valore) ? Number(qc[f.nome].valore) : (isNum(f.quota) ? Number(f.quota) : null) })),
       righe: (L.righe || []).filter((r) => r.nomeReg).map((r) => ({ foglio: r.foglio, nomeReg: clean(r.nomeReg), assoc: !!r.assoc, mesi: (r.mesi || []).slice(), quota: isNum(r.quota) ? Number(r.quota) : null })),
       pagati: Array.from(pag.values()).map((x) => ({ ...x, m: x.m.sort() })),
-      nomi: (A && A.nomiReg) || {}
+      nomi: (A && A.nomiReg) || {},
+      ...(Array.isArray(L.inattivi) ? { inattivi: L.inattivi.slice().sort() } : {}) // solo se il registro viene dall'app
     };
   }
   function letturaDaCopia(c) {
@@ -3072,8 +3109,122 @@
     });
     const quoteCorsi = {};
     ((c && c.fogli) || []).forEach((f) => { if (isNum(f.quota)) quoteCorsi[f.nome] = Number(f.quota); });
-    return { L: { fogli: (c && c.fogli) || [], righe: (c && c.righe) || [], pagamenti, saltati: [] }, nomi: (c && c.nomi) || {}, quoteCorsi };
+    return { L: { fogli: (c && c.fogli) || [], righe: (c && c.righe) || [], pagamenti, saltati: [], ...(c && Array.isArray(c.inattivi) ? { inattivi: c.inattivi } : {}) }, nomi: (c && c.nomi) || {}, quoteCorsi };
   }
+  // ---------------------------------------------------------------- Registro nazionale (RAS)
+  // Elenco dei tesserati della società nel Registro nazionale delle attività sportive dilettantistiche, stampato
+  // in PDF dal portale (o copiato dalla pagina): «184307118 UISP MARIO ROSSI (RSSMRA80A01A182X) Atleta Praticante».
+  const QUAL_RAS = [[/^atlet/i, 'Atleta'], [/^dirig/i, 'Dirigente'], [/^tecnic/i, 'Tecnico'], [/^istrut/i, 'Istruttore'], [/^allenat/i, 'Allenatore'], [/^giudic|^arbitr/i, 'Giudice/arbitro'], [/^medic/i, 'Medico']];
+  function leggiRAS(testo) {
+    const t = String(testo || '').replace(/[ \s]+/g, ' ');
+    const re = /(\d{6,12}) ([A-Z][A-Z.]{1,11}) ([^()]{2,100}?) ?\( ?([A-Za-z0-9]{16}) ?\)(?: (\S+))?/g;
+    const out = [], visti = new Set();
+    let m;
+    while ((m = re.exec(t))) {
+      const nome = clean(m[3].replace(/^[^A-Za-zÀ-ÿ']+/, ''));
+      const cf = m[4].toUpperCase();
+      const q = QUAL_RAS.find(([r]) => r.test(m[5] || ''));
+      const k = m[1] + '|' + cf;
+      if (visti.has(k)) continue; // la stessa riga in due file
+      visti.add(k);
+      out.push({ id: m[1], ente: m[2].replace(/\./g, ''), nome, cf, qual: q ? q[1] : '' });
+    }
+    return out;
+  }
+  // confronto con il libro soci (situazioneLibro): per ogni socio, tesserato nel libro e presente nel registro
+  const ESITI_RAS = {
+    ok: ['Nel registro', 'ok'], manca: ['Tesserato, non nel registro', 'err'], 'altro-ente': ['Nel registro con un altro ente', 'warn'],
+    'da-segnare': ['Nel registro, non segnato tesserato', 'warn'], 'cf-diverso': ['Codice fiscale diverso', 'warn'],
+    recesso: ['Nel registro, con data di recesso', 'muted'], 'fuori-libro': ['Nel registro, non nel libro soci', 'warn']
+  };
+  function confrontaRAS(sit, voci) {
+    const parole = (n) => normNome(n).split(' ').filter(Boolean).sort().join(' ');
+    const perCF = new Map(), perNome = new Map();
+    voci.forEach((v) => {
+      if (!perCF.has(v.cf)) perCF.set(v.cf, []);
+      perCF.get(v.cf).push(v);
+      const k = parole(v.nome);
+      if (!perNome.has(k)) perNome.set(k, []);
+      perNome.get(k).push(v);
+    });
+    const usate = new Set();
+    const righe = [];
+    // prima i soci attivi, poi quelli con recesso (una persona rientrata ha due righe nel libro)
+    const lista = sit.filter((x) => !x.inAttesa).slice().sort((a, b) => (a.attivo ? 0 : 1) - (b.attivo ? 0 : 1));
+    lista.forEach((x) => {
+      const cf = clean(x.e.cf || '').toUpperCase();
+      let v = cf && perCF.get(cf) ? perCF.get(cf).filter((y) => !usate.has(y)) : [];
+      let cfDiverso = null;
+      if (!v.length) {
+        const pn = perNome.get(parole(x.nominativo));
+        const libere = pn ? pn.filter((y) => !usate.has(y)) : [];
+        if (libere.length && (!cf || libere.every((y) => y.cf !== cf))) { v = libere; if (cf) cfDiverso = libere[0].cf; }
+      }
+      if (!x.attivo) {
+        if (v.length) { v.forEach((y) => usate.add(y)); righe.push({ x, enti: [], ras: v, esito: 'recesso', nota: 'Nel libro ha la data di recesso ' + fmtData(x.e.dataRecesso) + '.' }); }
+        return;
+      }
+      v.forEach((y) => usate.add(y));
+      const tesserati = x.enti.filter((en) => x.tess[en]);
+      if (!tesserati.length && !v.length) return; // né tesserato né nel registro: non serve confrontarlo
+      const enti = x.enti.map((en) => {
+        const r = v.filter((y) => y.ente === en);
+        const tess = !!x.tess[en];
+        const esito = tess ? (r.length ? 'ok' : v.length ? 'altro-ente' : 'manca') : (r.length ? 'da-segnare' : null);
+        return { ente: en, tess, ras: r, esito };
+      });
+      // nel registro con un ente che, dai corsi, il socio non avrebbe
+      const extra = v.filter((y) => !x.enti.includes(y.ente));
+      const ordine = ['manca', 'altro-ente', 'da-segnare', 'ok'];
+      let esito = ordine.find((k) => enti.some((e) => e.esito === k)) || 'ok';
+      const note = [];
+      enti.forEach((e) => {
+        if (e.esito === 'manca') note.push('Segnato tesserato ' + e.ente + ', ma nel registro non c’è.');
+        if (e.esito === 'altro-ente') note.push('Segnato tesserato ' + e.ente + ', nel registro c’è con ' + v.map((y) => y.ente).filter((a, i, l) => l.indexOf(a) === i).join(' e ') + '.');
+        if (e.esito === 'da-segnare') note.push('Nel registro con ' + e.ente + ': nel libro non è segnato tesserato ' + e.ente + '.');
+      });
+      if (extra.length && !enti.some((e) => e.esito === 'altro-ente')) note.push('Nel registro anche con ' + extra.map((y) => y.ente).filter((a, i, l) => l.indexOf(a) === i).join(' e ') + '.');
+      if (cfDiverso) { note.unshift('Trovato per nome: nel registro il codice fiscale è ' + cfDiverso + ', nel libro ' + (cf || 'manca') + '.'); if (esito === 'ok') esito = 'cf-diverso'; }
+      righe.push({ x, enti, ras: v, esito, nota: note.join(' ') });
+    });
+    // nel registro, ma non nel libro soci
+    const fuori = new Map();
+    voci.filter((y) => !usate.has(y)).forEach((y) => { if (!fuori.has(y.cf)) fuori.set(y.cf, []); fuori.get(y.cf).push(y); });
+    fuori.forEach((v) => righe.push({ x: null, enti: [], ras: v, esito: 'fuori-libro', nota: v.some((y) => y.qual && y.qual !== 'Atleta') ? 'Nel registro come ' + v.map((y) => y.qual || 'tesserato').filter((a, i, l) => l.indexOf(a) === i).join(' e ').toLowerCase() + '.' : '' }));
+    const n = (k) => righe.filter((r) => r.esito === k).length;
+    const tessLibro = { UISP: 0, FIP: 0 }, tessOk = { UISP: 0, FIP: 0 };
+    righe.forEach((r) => r.enti.forEach((e) => { if (e.tess) { tessLibro[e.ente] = (tessLibro[e.ente] || 0) + 1; if (e.esito === 'ok') tessOk[e.ente] = (tessOk[e.ente] || 0) + 1; } }));
+    return {
+      righe, voci: voci.length, persone: new Set(voci.map((v) => v.cf)).size,
+      perEnte: voci.reduce((o, v) => { o[v.ente] = (o[v.ente] || 0) + 1; return o; }, {}),
+      tessLibro, tessOk, n: { ok: n('ok'), manca: n('manca'), altro: n('altro-ente'), daSegnare: n('da-segnare'), cf: n('cf-diverso'), recesso: n('recesso'), fuori: n('fuori-libro') }
+    };
+  }
+  function rasWorkbook(ExcelJS, s, V, info) {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Registro nazionale');
+    ws.columns = [{ width: 8 }, { width: 30 }, { width: 19 }, { width: 18 }, { width: 16 }, { width: 34 }, { width: 30 }, { width: 50 }];
+    ws.getCell('A1').value = 'Verifica dei tesserati nel Registro nazionale delle attività sportive dilettantistiche';
+    ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.getCell('A2').value = 'Anno sportivo ' + s.es + (info ? ' · ' + info : '') + ' · ' + V.voci + ' righe del registro, ' + V.persone + ' persone';
+    const h = ws.getRow(4);
+    ['N.', 'Socio', 'Codice fiscale', 'Corsi', 'Tesserato nel libro', 'Nel registro', 'Esito', 'Nota'].forEach((t, i) => { h.getCell(i + 1).value = t; h.getCell(i + 1).font = { bold: true }; h.getCell(i + 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E6DF' } }; });
+    const fill = { ok: 'FFE3F1E4', warn: 'FFFFF2CC', err: 'FFF8D7D5', muted: 'FFF2F2F2' };
+    V.righe.forEach((r) => {
+      const es = ESITI_RAS[r.esito] || [r.esito, 'muted'];
+      const row = ws.addRow([
+        r.x && r.x.e.n != null ? r.x.e.n : '', r.x ? r.x.nominativo : r.ras[0].nome, r.x ? (r.x.e.cf || '') : r.ras[0].cf, r.x ? r.x.corsi.join(', ') : '',
+        r.x ? r.enti.map((e) => e.ente + (e.tess ? ' sì' : ' no')).join(' · ') : '',
+        r.ras.map((y) => y.ente + ' ' + y.id + (y.qual ? ' (' + y.qual.toLowerCase() + ')' : '')).join(' · '), es[0], r.nota || ''
+      ]);
+      row.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill[es[1]] } }; c.alignment = { vertical: 'top', wrapText: true }; });
+    });
+    ws.autoFilter = 'A4:H4';
+    ws.views = [{ state: 'frozen', ySplit: 4 }];
+    ws.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '4:4' };
+    return wb;
+  }
+
   // ---------------------------------------------------------------- verifica dell'estratto conto bancario
   // Estratto conto (righe del foglio Excel della banca) → movimenti { data, valuta, desc, importo, caus, agg }.
   // Le colonne si riconoscono dai titoli: Data (operazione), Valuta, Descrizione, Importo/EUR oppure Dare e Avere.
@@ -4199,8 +4350,8 @@
     rendicontoEconomico, statoPatrimoniale, rendicontoCassa, calcola,
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
-    numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, disciplinaDaCorsi, corsiLibro, esBreve,
-    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, ricaviNetti, ricaviNettiWorkbook, leggiCostiRicaviNetti, esclusiEsercizio, leggiEstratto, verificaBanca, verificaBancaWorkbook, ESITI_BANCA, dataEstratto, descBancaBreve, compattaEstratto, estrattoDaCompatto, incassiCorsi, costoCorsoMese, etichettaCorso, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
+    numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, disciplinaDaCorsi, corsiLibro, corsiAutomatici, basketDaCorsi, stessiCorsi, togliNumeriLibro, esBreve,
+    mesiForzatiOp, sociOperazione, REG_MEZZI, ultimaRicevuta, haRicevuta, serveRicevuta, ordineCronologico, firmaPagamenti, differenzeFirma, pianoModificheApp, cassaBasket, basketDaRegistro, cassaSettore, parteSettoreOp, isAcqui, SETTORI, ricaviNetti, ricaviNettiWorkbook, leggiCostiRicaviNetti, leggiRAS, confrontaRAS, rasWorkbook, ESITI_RAS, esclusiEsercizio, leggiEstratto, verificaBanca, verificaBancaWorkbook, ESITI_BANCA, dataEstratto, descBancaBreve, compattaEstratto, estrattoDaCompatto, incassiCorsi, costoCorsoMese, etichettaCorso, isBasket, parteBasketOp, cassaBasketWorkbook, leggiCassaBasket, abbinaCassaBasket, quoteDaVersare, copiaRegistro, letturaDaCopia, cruscotto, cruscottoWorkbook, contantiDaConsegnare, dataConsegna, leggiRegistro, letturaDaArchivio, confrontaRegistro, registroSalvato, registroDaSalvare, grigio, nonIncassareSalvati, nonIncassareSocio, chiavePagamento, ordiniInserimento, normNome, parseNome, punteggioNome, proponiNome, mezzoScrittura,
     esportaWorkbook, importaWorkbook, nuovoEsercizio
   };
   root.Core = Core;
