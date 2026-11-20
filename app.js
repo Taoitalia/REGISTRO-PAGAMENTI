@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const VERSIONE_APP = 'da8dd5f9';
+  const VERSIONE_APP = '4c9a47d1';
   const KEY = 'registro-pagamenti:v1';
   const TABELLE = ['corsi', 'soci', 'iscrizioni', 'pagamenti'];
   // «allenatore»: contanti incassati dall'allenatore e non ancora consegnati in cassa (in rosso finché non arrivano)

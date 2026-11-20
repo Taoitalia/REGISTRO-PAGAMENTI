@@ -266,6 +266,118 @@
     return { A: 'A) Interesse generale', B: 'B) Attività diverse', C: 'C) Raccolta fondi', D: 'D) Finanziarie e patrimoniali', E: 'E) Supporto generale', F: 'Investimenti e finanziamenti' }[s] || '';
   }
 
+  // ---------------------------------------------------------------- regole del Rendiconto per Cassa
+  // (documento «Rendiconto per cassa – regole di calcolo», ricavato dai file Bilancio 2024-2025 e 2025-2026)
+  // Uscite: Dare − Avere del conto; entrate: Avere − Dare. Fuori dal rendiconto: la liquidità (Cassa Alessandria,
+  // Banca), le partite di giro con i soci (conto Soci, a fine anno deve essere a zero) e la scrittura di apertura.
+  const RPC_FUORI = new Set(['Cassa Alessandria', 'Banca', 'Soci', "Avanzo dell'esercizio", 'Fondo comune', 'Disavanzo dell’esercizio']);
+  // conti con la voce già definita
+  const RPC_DEFINITE = {
+    'Materiali per attività sportiva': 'CA1', 'Spese varie': 'CA1', 'Materiali di consumo': 'CA1', 'Attrezzature per palestra': 'CA1',
+    'Compensi soci allenatori': 'CA2', 'Spese di gestione': 'CA2',
+    'Spese utilizzo impianti': 'CA3',
+    'Tesseramento (affiliazioni e tessere)': 'CA7', 'Spese per raccolte pubbliche di fondi': 'CA7',
+    'Spese bancarie': 'CE2', 'Spese telefoniche': 'CE2',
+    'Quote sociali': 'RA1', 'Quote partecipazione attività sport.': 'RA2', 'Contributi da convenzioni con Enti': 'RA8', 'Interessi attivi': 'RA10'
+  };
+  // conti del piano non ancora usati: voce proposta, da confermare quando compaiono
+  const RPC_PROPOSTE = {
+    'Affitto sede': 'CA3', 'Compensi collaboratori': 'CA2', 'Rimborso spese viaggio': 'CA2', 'Spese per visite mediche': 'CA2',
+    'Spese manutenzione sede': 'CA2', 'Spese pulizia': 'CA2', 'Spese postali': 'CE2', 'Spese di gestione diverse': 'CE7',
+    'Imposta intrattenimento': 'CA7', 'Imposte dirette (IRES e IRAP)': 'IM',
+    'Contributo Regione Piemonte': 'RA8', 'Contributo Comune': 'RA8', 'Donazioni ed erogazioni liberali': 'RA4',
+    'Contributi da soci e/o privati': 'RA6', 'Quote partecipazione corsi': 'RA2',
+    'Ricavi da pubblicità': 'RB3', 'Ricavi da sponsorizzazione': 'RB3', 'Proventi da collaborazioni con terzi': 'RB3',
+    'Proventi da vendita biglietti': 'RC2'
+  };
+  const testoRegola = (t) => clean(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // conti che non vanno in una sola voce: ogni riga si assegna dalla descrizione (o dal lato), nell'ordine scritto;
+  // null = nessuna regola: la voce va proposta e confermata
+  const RPC_RIGHE = {
+    'Costi di pubblicità': (rg) => {
+      const t = testoRegola(rg.desc);
+      if (/diritt/.test(t) && /affission/.test(t)) return { code: 'CE7', regola: 'diritto di pubblica affissione' };
+      if (/manifest|\btel[oi]\b|roll\s*-?\s*up/.test(t)) return { code: 'CE1', regola: 'manifesti, telo, rollup' };
+      if (/dominio|evento/.test(t)) return { code: 'CE2', regola: 'dominio web, eventi' };
+      if (/divis[ae]|abbigliament|magliett|felp|\btut[ae]\b|pantaloncin|canott/.test(t)) return { code: 'CA1', regola: 'divise e abbigliamento per l’attività' };
+      return null;
+    },
+    'Acquisto cancelleria': (rg) => {
+      const t = testoRegola(rg.desc);
+      return /carta\s*a5/.test(t) && /ricevut/.test(t) ? { code: 'CE1', regola: 'carta A5 per le ricevute' } : { code: 'CE7', regola: 'cancelleria' };
+    },
+    // in Dare: donazioni fatte dall'associazione; in Avere: entrate da raccolta fondi (da confermare)
+    'Raccolte pubbliche di fondi': (rg) => (num(rg.dare) > 0 && !num(rg.avere) ? { code: 'CA7', regola: 'donazioni fatte dall’associazione (Dare)' } : null)
+  };
+  const RPC_PROPOSTE_RIGHE = { 'Costi di pubblicità': 'CE2', 'Raccolte pubbliche di fondi': 'RC2' };
+  // voce proposta per un conto senza regola: quella del documento, poi quella del piano dei conti, poi dal nome
+  function rpcProposta(c, nome, rg) {
+    if (RPC_PROPOSTE[nome]) return RPC_PROPOSTE[nome];
+    if (c && c.rpc) return c.rpc;
+    const t = testoRegola(nome);
+    const costo = c ? c.t === 'C' : num(rg && rg.dare) > 0;
+    if (costo) {
+      if (/affitt|noleggi|locazion|impiant|palestr/.test(t)) return 'CA3';
+      if (/impost|tass[ae]|ires|irap/.test(t)) return 'IM';
+      if (/banc|postal|telefon|internet|dominio|energia|luce|gas|acqua/.test(t)) return 'CE2';
+      if (/cancelleri|gestione divers|amministr/.test(t)) return 'CE7';
+      if (/material|attrezzatur|abbigliament|divis|merci|acquist/.test(t)) return 'CA1';
+      if (/compens|rimbors|visit|manutenz|pulizi|assicuraz|serviz|consulen|allenator|istruttor|giudic/.test(t)) return 'CA2';
+      return 'CA7';
+    }
+    if (/quote soci|associativ/.test(t)) return 'RA1';
+    if (/quote|corsi|partecipaz/.test(t)) return 'RA2';
+    if (/5 ?per ?mille|cinque per mille/.test(t)) return 'RA5';
+    if (/donazion|erogazion|liberal/.test(t)) return 'RA4';
+    if (/contribut/.test(t) && /regione|comune|ent[ie]|stat|pubblic|provinc|ministe/.test(t)) return 'RA8';
+    if (/contribut/.test(t)) return 'RA6';
+    if (/interess/.test(t)) return 'RA10';
+    if (/pubblicit|sponsor|collaboraz/.test(t)) return 'RB3';
+    if (/raccolt|bigliett|lotteri/.test(t)) return 'RC2';
+    return 'RA10';
+  }
+  const chiaveRigaRpc = (op, i) => op.id + ':' + i;
+  // voce del Rendiconto per Cassa di ogni riga del Libro Giornale.
+  // stato: regola (regole definite), confermata (scelta nel programma), proposta (da accettare o cambiare),
+  // conto (attività/passività con la voce nel piano dei conti), fuori (non entra nel rendiconto), senza (da sistemare)
+  function imputazioniCassa(s, ops) {
+    const cm = contoMap(s);
+    const man = s.rpcRighe || {};
+    const out = [];
+    ops.forEach((op) => (op.righe || []).forEach((rg, i) => {
+      const nome = rg.conto;
+      if (!nome || (!num(rg.dare) && !num(rg.avere))) return;
+      const c = cm.get(nome);
+      const base = { op, i, rg, conto: nome };
+      if (RPC_FUORI.has(nome) || (c && (c.t === 'N' || c.fin))) return;
+      let code = null, stato, regola = '', riga = false;
+      const mr = man[chiaveRigaRpc(op, i)];
+      if (mr && mr.c && clean(mr.d || '') === clean(rg.desc || '')) { code = mr.c; stato = 'confermata'; riga = true; }
+      else if (RPC_RIGHE[nome]) {
+        riga = true;
+        const x = RPC_RIGHE[nome](rg);
+        if (x) { code = x.code; stato = 'regola'; regola = x.regola; }
+        else { code = RPC_PROPOSTE_RIGHE[nome] || rpcProposta(c, nome, rg); stato = 'proposta'; }
+      } else if (c && c.rpcOk && c.rpc) { code = c.rpc; stato = 'confermata'; }
+      else if (RPC_DEFINITE[nome]) { code = RPC_DEFINITE[nome]; stato = 'regola'; }
+      else if (!c || c.t === 'C' || c.t === 'R') { code = rpcProposta(c, nome, rg); stato = 'proposta'; }
+      else if (c.rpc) { code = c.rpc; stato = 'conto'; }
+      else stato = 'senza';
+      const v = code ? (rpcSide(code) === 'E' ? r2(num(rg.avere) - num(rg.dare)) : r2(num(rg.dare) - num(rg.avere))) : 0;
+      out.push({ ...base, code, stato, regola, riga, v });
+    }));
+    return out;
+  }
+  // voce che il programma usa per un conto intero (senza guardare le righe): per il piano dei conti
+  function voceCassaConto(c) {
+    if (!c || RPC_FUORI.has(c.n) || c.t === 'N' || c.fin) return { code: '', stato: 'fuori' };
+    if (RPC_RIGHE[c.n]) return { code: '', stato: 'righe' };
+    if (c.rpcOk && c.rpc) return { code: c.rpc, stato: 'confermata' };
+    if (RPC_DEFINITE[c.n]) return { code: RPC_DEFINITE[c.n], stato: 'regola' };
+    if (c.t === 'C' || c.t === 'R') return { code: rpcProposta(c, c.n), stato: 'proposta' };
+    return { code: c.rpc || '', stato: c.rpc ? 'conto' : 'senza' };
+  }
+
   // ---------------------------------------------------------------- impostazioni
   function nuoveImpostazioni(es) {
     const [y1, y2] = (es || '2026-2027').split('-').map(Number);
@@ -404,15 +516,10 @@
     const parP = r2(totP + re.avanzo + fondo);
     return { attivo, passivo, totA, totP, fondo, avanzo: re.avanzo, disavanzo: re.disavanzo, parA, parP, quadra: Math.abs(parA - parP) < 0.005 };
   }
-  function rendicontoCassa(s, bal, finali) {
+  function rendicontoCassa(s, bal, finali, ops, re) {
     const cur = {};
-    s.conti.forEach((c) => {
-      if (!c.rpc) return;
-      const b = bal.get(c.n);
-      if (!b) return;
-      const v = rpcSide(c.rpc) === 'E' ? b.a - b.d : b.d - b.a;
-      cur[c.rpc] = r2((cur[c.rpc] || 0) + v);
-    });
+    const imp = imputazioniCassa(s, ops || []);
+    imp.forEach((x) => { if (x.code) cur[x.code] = r2((cur[x.code] || 0) + x.v); });
     const prev = s.rpcPrec || {};
     const val = (side, code) => num(side === 'cur' ? cur[code] : prev[code]);
     const out = { cur: {}, prev: {} };
@@ -452,6 +559,30 @@
       V.R71 = k === 'cur' ? finali.banca : num(s.saldi.banca);
     });
     out.codes = { cur, prev };
+    // imputazioni da confermare: per conto (tutte le righe insieme) o per riga (conti divisi per descrizione)
+    const perConto = new Map();
+    const proposte = [];
+    imp.filter((x) => x.stato === 'proposta').forEach((x) => {
+      if (x.riga) { proposte.push({ tipo: 'riga', chiave: chiaveRigaRpc(x.op, x.i), conto: x.conto, code: x.code, v: x.v, d: num(x.rg.dare), a: num(x.rg.avere), desc: x.rg.desc || '', data: x.op.data, n: x.op._n, opId: x.op.id }); return; }
+      const p = perConto.get(x.conto) || { tipo: 'conto', chiave: x.conto, conto: x.conto, code: x.code, v: 0, d: 0, a: 0, righe: 0 };
+      p.v = r2(p.v + x.v); p.d = r2(p.d + num(x.rg.dare)); p.a = r2(p.a + num(x.rg.avere)); p.righe++;
+      perConto.set(x.conto, p);
+    });
+    out.proposte = Array.from(perConto.values()).concat(proposte);
+    out.imp = imp;
+    // controllo di quadratura: avanzo complessivo = variazione di cassa e banca = avanzo del Rendiconto Economico
+    const ini = r2(num(s.saldi.cassa) + num(s.saldi.banca)), fin = r2(num(finali.cassa) + num(finali.banca));
+    const senza = new Map();
+    imp.filter((x) => x.stato === 'senza').forEach((x) => { const b = senza.get(x.conto) || { conto: x.conto, d: 0, a: 0 }; b.d = r2(b.d + num(x.rg.dare)); b.a = r2(b.a + num(x.rg.avere)); senza.set(x.conto, b); });
+    const bs = bal.get('Soci');
+    const avEc = re ? r2(num(re.avanzo) - num(re.disavanzo)) : null;
+    out.controllo = {
+      avanzo: out.cur.R66, inizio: ini, fine: fin, variazione: r2(fin - ini),
+      quadra: Math.abs(out.cur.R66 - r2(fin - ini)) < 0.005,
+      avanzoEc: avEc, ugualeEc: avEc === null || Math.abs(out.cur.R66 - avEc) < 0.005,
+      soci: bs ? r2(bs.d - bs.a) : 0,
+      senza: Array.from(senza.values()).filter((b) => Math.abs(b.d - b.a) > 0.004)
+    };
     return out;
   }
 
@@ -461,15 +592,15 @@
     const cassa = registroCassa(sorted, s);
     const re = rendicontoEconomico(s, bal);
     const sp = statoPatrimoniale(s, bal, re);
-    const rpc = rendicontoCassa(s, bal, cassa.finale);
+    const rpc = rendicontoCassa(s, bal, cassa.finale, sorted, re);
     const cm = contoMap(s);
     const avvisi = [];
     bal.forEach((b, nome) => {
       const c = cm.get(nome);
       if (!c) avvisi.push({ tipo: 'conto', conto: nome, msg: 'Il conto «' + nome + '» è usato nel Libro Giornale ma non è nel piano dei conti.' });
       else if (c.t !== 'N' && !c.g) avvisi.push({ tipo: 'gruppo', conto: nome, msg: 'Il conto «' + nome + '» non è collegato a nessuna voce di bilancio.' });
-      else if ((c.t === 'C' || c.t === 'R') && !c.rpc && Math.abs(b.d - b.a) > 0.004) avvisi.push({ tipo: 'rpc', conto: nome, msg: 'Il conto «' + nome + '» non è collegato al Rendiconto per Cassa.' });
     });
+    if (rpc.proposte.length) avvisi.push({ tipo: 'rpc', msg: 'Rendiconto per Cassa: ' + (rpc.proposte.length === 1 ? '1 imputazione proposta da confermare' : rpc.proposte.length + ' imputazioni proposte da confermare') + ' (voci di entrata o di uscita senza una regola).' });
     let sbil = [];
     sorted.forEach((op) => { const t = totaliOp(op); if (Math.abs(t.diff) > 0.004) sbil.push(op); });
     if (sbil.length) avvisi.push({ tipo: 'sbilancio', msg: sbil.length + ' operazion' + (sbil.length > 1 ? 'i non quadrano' : 'e non quadra') + ' (Dare ≠ Avere): n. ' + sbil.map((o) => o._n).join(', ') });
@@ -505,7 +636,7 @@
   }
   const chiaveSocio = (n) => clean(n).toLowerCase();
   // mesi segnati a mano come pagati su un'operazione (la descrizione resta com'è):
-  // op.mesiForzati = [{ socio: 'Cermelli F.', mesi: ['2026-10'] }]
+  // op.mesiForzati = [{ socio: 'Rossi M.', mesi: ['2026-10'] }]
   function mesiForzatiOp(op) {
     return (Array.isArray(op.mesiForzati) ? op.mesiForzati : []).filter((x) => x && clean(x.socio) && Array.isArray(x.mesi) && x.mesi.length);
   }
@@ -1993,7 +2124,8 @@
     const inT = conN.filter((r) => T.has(r.id));
     if (!inT.length) return [];
     const m = Math.min(...inT.map((r) => Number(r.n)));
-    const coda = conN.filter((r) => Number(r.n) >= m).sort((a, b) => Number(a.n) - Number(b.n) || String(a.id).localeCompare(String(b.id)));
+    // i numeri scritti a mano restano dove sono: gli altri scalano saltandoli
+    const coda = conN.filter((r) => Number(r.n) >= m && !(r.nManuale && !T.has(r.id))).sort((a, b) => Number(a.n) - Number(b.n) || String(a.id).localeCompare(String(b.id)));
     const posti = coda.map((r) => Number(r.n));
     const out = [];
     coda.filter((r) => !T.has(r.id)).forEach((r, i) => { if (Number(r.n) !== posti[i]) out.push({ id: r.id, da: Number(r.n), a: posti[i] }); });
@@ -2352,6 +2484,7 @@
       ws.getRow(2).height = o.h2 || 25.8;
     }
 
+    const rigaLG = new Map(); // operazione → prima riga nel foglio Libro Giornale
     // ---------- Libro Giornale
     if (inc.has('Libro Giornale')) {
     const lg = wb.addWorksheet('Libro Giornale', { views: [{ zoomScale: 130 }] });
@@ -2369,6 +2502,7 @@
     let row = 5;
     (o.soloOps ? K.sorted.filter((op) => o.soloOps.has(op.id)) : K.sorted).forEach((op) => {
       const r0 = row, n = op.righe.length || 1;
+      rigaLG.set(op.id, r0);
       const r1 = r0 + n - 1;
       const cA = lg.getCell(r0, 1), cB = lg.getCell(r0, 2);
       cA.value = op._n;
@@ -2611,8 +2745,20 @@
     larghezze(rc, 'Rendiconto per Cassa');
     titoli(rc, 'B', 'H', 'RENDICONTO PER CASSA', titoloEs, { bold: true, h1: 30.6, h2: 25.2 });
     const RV = K.rpc;
+    // formula di una voce: SUMIF per i conti che vanno interi nella voce, riferimenti alle singole righe del Libro
+    // Giornale per i conti divisi per descrizione (calcolati a ogni esportazione: puntano sempre alle righe giuste)
+    const contiRiga = new Set(RV.imp.filter((x) => x.riga).map((x) => x.conto));
     const codeFormula = (code) => {
-      const parts = s.conti.filter((c) => c.rpc === code).map((c) => (rpcSide(code) === 'E' ? sumifA(c.n) + '-' + sumifD(c.n) : sumifD(c.n) + '-' + sumifA(c.n)));
+      const E = rpcSide(code) === 'E';
+      const imp = RV.imp.filter((x) => x.code === code);
+      const interi = Array.from(new Set(imp.filter((x) => !contiRiga.has(x.conto)).map((x) => x.conto)));
+      const parts = interi.map((n) => (E ? sumifA(n) + '-' + sumifD(n) : sumifD(n) + '-' + sumifA(n)));
+      for (const x of imp.filter((y) => contiRiga.has(y.conto))) {
+        const r0 = rigaLG.get(x.op.id);
+        if (!r0) return null; // riga non nel file: si scrive il valore
+        const rr = r0 + x.i;
+        parts.push(E ? LG + '!E' + rr + '-' + LG + '!D' + rr : LG + '!D' + rr + '-' + LG + '!E' + rr);
+      }
       return parts.length ? parts.join('+') : null;
     };
     const cellV = (addr, formula, result) => { const c = rc.getCell(addr); c.value = formula ? F(formula, result) : r2(result || 0); c.numFmt = ACC; };
@@ -2933,7 +3079,7 @@
   //  - celle rosse: contanti ancora presso l'allenatore (op.daConsegnare)
   //  - entrate: solo confronto con il calcolo (le quote seguono l'app e la regola del 50%)
   const PAROLE_VUOTE = new Set(['quota', 'quote', 'assoc', 'associativa', 'part', 'att', 'sport', 'socio', 'soci', 'per', 'del', 'della', 'dei', 'con', 'pagamento', 'cassa', 'banca', 'alessandria']);
-  // parole significative; le iniziali si legano alla parola precedente («Repetto P.» → repetto, repetto_p)
+  // parole significative; le iniziali si legano alla parola precedente («Bianchi P.» → bianchi, bianchi_p)
   const parole = (t) => {
     const w = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
     const out = new Set();
@@ -4329,6 +4475,7 @@
     ns.saldi = { cassa: K.cassa.finale.cassa, banca: K.cassa.finale.banca };
     ns.fondo = r2(num(s.fondo) + K.re.saldo);
     ns.rpcPrec = {};
+    delete ns.rpcRighe; // le imputazioni confermate riga per riga valgono solo per le operazioni del loro esercizio
     Object.keys(K.rpc.codes.cur).forEach((k) => { if (Math.abs(K.rpc.codes.cur[k]) > 0.004) ns.rpcPrec[k] = K.rpc.codes.cur[k]; });
     const avanzo = K.re.saldo;
     const apertura = {
@@ -4347,7 +4494,7 @@
     RE, SP, TIPI, RPC_ROWS, RPC_CODES, CONTI_DEFAULT, rpcSide, rpcSection, gruppiPerTipo, gruppoLabel,
     nuoveImpostazioni, mesiEsercizio, chiaveMese, contoMap, contoFin, etichetta,
     ordina, numera, totaliOp, saldiConti, valoreConto, registroCassa, descCassaAuto,
-    rendicontoEconomico, statoPatrimoniale, rendicontoCassa, calcola,
+    rendicontoEconomico, statoPatrimoniale, rendicontoCassa, calcola, imputazioniCassa, voceCassaConto, chiaveRigaRpc, RPC_DEFINITE, RPC_RIGHE, RPC_FUORI,
     parsePeriodo, formatPeriodo, situazioneSoci, statoSocio, chiaveSocio,
     commissione, scritturaQuote, scritturaSpesa, scritturaIncasso, scritturaGiroconto, prossimaRicevuta, leggiNumeroRic, testoRic, testoRicRiga, rigaConRic, storicoVoci,
     numeroInLettere, normalizzaTelefono, enteDefault, etichettaRicevuta, trovaAnagrafica, ricevutaDaOperazione, ricevutaSVG, importaAnagrafica, unisciAnagrafica, BASKET_LETTERE, BASKET_CORSI, BASKET_NOMI, datiDaCF, cfValido, leggiNascita, eta, idLibro, importaLibro, situazioneLibro, nomeContabile, libroWorkbook, reportSVG, registroWorkbook, situazioneSociWorkbook, anagraficaWorkbook, ricevuteWorkbook, FOGLI_BILANCIO, ENTI, enteCorso, entiDaCorsi, corsiSocio, disciplinaDaCorsi, corsiLibro, corsiAutomatici, basketDaCorsi, stessiCorsi, togliNumeriLibro, esBreve,
